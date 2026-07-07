@@ -85,7 +85,7 @@ class FaceBiometricEngine(context: Context) {
      * Matches the given embedding against all cached templates across all profiles.
      * Returns a pair of the matched FaceProfileEntity and the best similarity score, or null if no match exceeds threshold.
      */
-    fun matchAgainstCache(liveEmbedding: FloatArray): Pair<FaceProfileEntity, Float>? {
+    fun matchAgainstCache(liveEmbedding: FloatArray, threshold: Float = FaceRecognitionConfig.MATCH_THRESHOLD): Pair<FaceProfileEntity, Float>? {
         var bestOverallScore = 0f
         var bestProfile: FaceProfileEntity? = null
 
@@ -103,7 +103,7 @@ class FaceBiometricEngine(context: Context) {
             }
         }
 
-        if (bestOverallScore > FaceRecognitionConfig.MATCH_THRESHOLD && bestProfile != null) {
+        if (bestOverallScore > threshold && bestProfile != null) {
             return Pair(bestProfile, bestOverallScore)
         }
         return null

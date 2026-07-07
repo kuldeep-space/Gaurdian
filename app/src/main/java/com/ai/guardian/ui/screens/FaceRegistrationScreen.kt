@@ -43,6 +43,10 @@ import androidx.room.withTransaction
 import com.ai.guardian.ai.FaceBiometricEngine
 import com.ai.guardian.ai.FaceRecognitionConfig
 import com.ai.guardian.ai.VerificationResult
+import com.ai.guardian.R
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.layout.ContentScale
 
 import com.ai.guardian.ui.theme.*
 import com.ai.guardian.viewmodel.MainViewModel
@@ -55,17 +59,17 @@ import java.util.concurrent.Executors
 
 // ─── Pose instruction data ────────────────────────────────────────────────────
 
-private data class PoseGuide(val stepLabel: String, val poseName: String, val detail: String)
+private data class PoseGuide(val stepLabel: String, val poseName: String, val detail: String, val imageResId: Int?)
 
 private fun poseGuideFor(step: Int) = when (step) {
-    0    -> PoseGuide("Step 1 of 5", "Look Straight", "Face the camera directly. Hold your phone steady.")
-    1    -> PoseGuide("Step 2 of 5", "Turn Left",     "Turn your face left about 30–45°. Hold still until capture completes.")
-    2    -> PoseGuide("Step 3 of 5", "Turn Right",    "Turn your face right about 30–45°. Hold still until capture completes.")
-    3    -> PoseGuide("Step 4 of 5", "Look Up",       "Tilt your head up slightly.")
-    4    -> PoseGuide("Step 5 of 5", "Look Down",     "Tilt your head down slightly.")
-    5    -> PoseGuide("Verifying",   "Look Straight", "Look straight at the camera to confirm your profile.")
-    6    -> PoseGuide("Saving",      "Please Wait",   "Your biometric profile is being saved securely.")
-    else -> PoseGuide("Timed Out",   "Try Again",     "The pose timed out. Tap Retry to start over.")
+    0    -> PoseGuide("Step 1 of 5", "Look Straight", "Face the camera directly. Hold your phone steady.", R.drawable.img_pose_front)
+    1    -> PoseGuide("Step 2 of 5", "Turn Left",     "Turn your face left about 30–45°. Hold still.", R.drawable.img_pose_left)
+    2    -> PoseGuide("Step 3 of 5", "Turn Right",    "Turn your face right about 30–45°. Hold still.", R.drawable.img_pose_right)
+    3    -> PoseGuide("Step 4 of 5", "Look Up",       "Tilt your head up slightly.", R.drawable.img_pose_top)
+    4    -> PoseGuide("Step 5 of 5", "Look Down",     "Tilt your head down slightly.", R.drawable.img_pose_bottom)
+    5    -> PoseGuide("Verifying",   "Look Straight", "Look straight at the camera to confirm.", R.drawable.img_pose_front)
+    6    -> PoseGuide("Saving",      "Please Wait",   "Your biometric profile is being saved securely.", null)
+    else -> PoseGuide("Timed Out",   "Try Again",     "The pose timed out. Tap Retry to start over.", null)
 }
 
 // ─── Root screen ──────────────────────────────────────────────────────────────
@@ -351,12 +355,30 @@ fun CaptureStep(
                 color    = MaterialTheme.colorScheme.surface,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                    Text(guide.stepLabel, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
-                    Spacer(Modifier.height(2.dp))
-                    Text(guide.poseName, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, lineHeight = 26.sp)
-                    Spacer(Modifier.height(2.dp))
-                    Text(guide.detail,   fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(guide.stepLabel, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(guide.poseName, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, lineHeight = 26.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(guide.detail,   fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+                    }
+                    if (guide.imageResId != null) {
+                        Spacer(Modifier.width(12.dp))
+                        Image(
+                            painter = painterResource(id = guide.imageResId),
+                            contentDescription = guide.poseName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))

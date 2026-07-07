@@ -13,5 +13,6 @@ data class DeviceSettingsEntity(
     val isRemoteTrackingEnabled: Boolean = false,
     val livenessStrictness: String = "Normal", // Relaxed, Normal, Strict
     val showLockScreenOverlay: Boolean = true,
-    val trustedAuthDurationMinutes: Int = 1 // 0 means Off
+    val trustedAuthDurationMinutes: Int = 1, // 0 means Off
+    val matchingThreshold: Float = 0.75f
 )

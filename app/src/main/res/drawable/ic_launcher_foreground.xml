@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Insets control how large the logo appears inside the Adaptive Icon mask -->
     <item
         android:top="16dp"
         android:bottom="16dp"

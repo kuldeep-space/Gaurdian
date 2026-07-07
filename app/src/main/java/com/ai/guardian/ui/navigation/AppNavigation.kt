@@ -175,7 +175,13 @@ fun AppNavigation(viewModel: MainViewModel) {
                 com.ai.guardian.ui.screens.FaceRegistrationScreen(
                     viewModel             = viewModel,
                     onRegistrationSuccess = {
-                        navController.navigate("face_security") { popUpTo("dashboard") }
+                        navController.navigate("face_security") {
+                            popUpTo("dashboard") {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
                     },
                     onBack = { navController.popBackStack() }
                 )

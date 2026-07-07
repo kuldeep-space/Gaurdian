@@ -64,7 +64,6 @@ fun SettingsScreen(
         val settings by viewModel.settings.collectAsState()
         
         SettingsGroup(label = "Face Recognition") {
-            var threshold by remember { mutableStateOf(0.55f) }
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -72,17 +71,17 @@ fun SettingsScreen(
                     verticalAlignment     = Alignment.CenterVertically
                 ) {
                     Text("Matching Threshold", fontSize = 14.sp, color = MaterialTheme.colorScheme.onBackground, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
-                    Text(String.format("%.2f", threshold), fontSize = 14.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                    Text(String.format("%.2f", settings.matchingThreshold), fontSize = 14.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Higher value = stricter matching. Recommended: 0.55–0.70",
+                    "Higher value = stricter matching. Recommended: 0.65–0.80",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp
                 )
                 Slider(
-                    value         = threshold,
-                    onValueChange = { threshold = it },
-                    valueRange    = 0.50f..0.90f,
+                    value         = settings.matchingThreshold,
+                    onValueChange = { viewModel.updateMatchingThreshold(it) },
+                    valueRange    = 0.65f..0.90f,
                     modifier      = Modifier.fillMaxWidth(),
                     colors        = SliderDefaults.colors(
                         thumbColor        = MaterialTheme.colorScheme.primary,

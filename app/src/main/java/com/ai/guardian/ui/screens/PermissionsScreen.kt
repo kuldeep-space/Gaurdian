@@ -55,7 +55,6 @@ fun PermissionsScreen(onAllPermissionsGranted: () -> Unit) {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasOverlay = Settings.canDrawOverlays(context)
                 hasA11y    = checkA11yPermission(context)
-                if (hasCamera && hasOverlay && hasA11y) onAllPermissionsGranted()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

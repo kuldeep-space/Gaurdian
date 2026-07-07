@@ -7,7 +7,7 @@ object FaceRecognitionConfig {
      * real device testing and target FAR/FRR metrics.
      * Calibrated to 0.65f (optimal balance between False Accept and False Reject).
      */
-    const val MATCH_THRESHOLD = 0.65f
+    const val MATCH_THRESHOLD = 0.75f
 
     // Face size limits (percentage of image area)
     const val MIN_FACE_SIZE_RATIO = 0.20f
@@ -47,9 +47,7 @@ object FaceRecognitionConfig {
     // Engine warmup: moved from hardcoded 600ms → 400ms via config
     const val ENGINE_WARMUP_MS = 400L
 
-    // Gamma correction: applied to face crop when luminance is below this threshold.
-    // γ = 0.65 non-linearly lifts shadows without blowing out highlights.
-    // Pre-computed LUT has 256-byte footprint. Applied on 112×112 crop: < 1ms.
+    
     const val GAMMA_CORRECTION_THRESHOLD = 80
     const val GAMMA_VALUE = 0.65f
 

@@ -277,6 +277,8 @@ class AppLockActivity : ComponentActivity() {
             }
         }
 
+        var matchingThreshold by remember { mutableStateOf(FaceRecognitionConfig.MATCH_THRESHOLD) }
+
         LaunchedEffect(Unit) {
             transitionToState(SessionLifecycleState.RUNNING)
             engine?.resetWarmup()
@@ -284,8 +286,13 @@ class AppLockActivity : ComponentActivity() {
 
             try {
                 val dao = (application as GuardianApplication).container.faceDao
+                val settingsDao = (application as GuardianApplication).container.deviceSettingsDao
 
                 val profiles = withContext(Dispatchers.IO) {
+                    val settings = settingsDao.getSettings()
+                    if (settings != null) {
+                        matchingThreshold = settings.matchingThreshold
+                    }
                     dao.getAllProfilesWithTemplates()
                 }
                 if (profiles.isNotEmpty()) {
@@ -402,7 +409,7 @@ class AppLockActivity : ComponentActivity() {
                                             session.inferenceCount++
                                             authState = AuthenticationState.RECOGNIZING
                                             
-                                            val matchResult = currentEngine.matchAgainstCache(result.embedding)
+                                            val matchResult = currentEngine.matchAgainstCache(result.embedding, matchingThreshold)
 
                                             if (matchResult != null) {
                                                 val score = matchResult.second
@@ -410,7 +417,7 @@ class AppLockActivity : ComponentActivity() {
 
                                                 // Fast path: high-confidence match — unlock immediately without buffering.
                                                 // Avoids any wait on bright-light or perfectly aligned frames.
-                                                if (score >= FaceRecognitionConfig.MATCH_THRESHOLD + FaceRecognitionConfig.EMBEDDING_FAST_UNLOCK_MARGIN) {
+                                                if (score >= matchingThreshold + FaceRecognitionConfig.EMBEDDING_FAST_UNLOCK_MARGIN) {
                                                     session.embeddingBuffer.clear()
                                                     authState = AuthenticationState.SUCCESS
                                                     val duration = SystemClock.elapsedRealtime() - session.sessionStartTime
@@ -446,9 +453,9 @@ class AppLockActivity : ComponentActivity() {
                                                 // Buffer full: compute averaged embedding and re-match.
                                                 val averaged = averageAndNormalize(session.embeddingBuffer.toList())
                                                 session.embeddingBuffer.clear()
-                                                val avgMatch = currentEngine.matchAgainstCache(averaged)
+                                                val avgMatch = currentEngine.matchAgainstCache(averaged, matchingThreshold)
 
-                                                if (avgMatch != null && avgMatch.second >= FaceRecognitionConfig.MATCH_THRESHOLD) {
+                                                if (avgMatch != null && avgMatch.second >= matchingThreshold) {
                                                     authState = AuthenticationState.SUCCESS
                                                     val duration = SystemClock.elapsedRealtime() - session.sessionStartTime
                                                     addLog("[DEBUG_REPORT] ===============================")

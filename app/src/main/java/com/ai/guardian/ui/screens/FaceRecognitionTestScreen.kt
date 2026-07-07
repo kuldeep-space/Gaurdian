@@ -57,6 +57,7 @@ fun FaceRecognitionTestScreen(onBack: () -> Unit) {
     var statusMessage by remember { mutableStateOf("Position your face inside the circle") }
     var testTimestamp by remember { mutableLongStateOf(0L) }
     var matchTimeMs by remember { mutableLongStateOf(0L) }
+    var matchingThreshold by remember { mutableFloatStateOf(FaceRecognitionConfig.MATCH_THRESHOLD) }
 
     val faceProfiles = remember { mutableStateListOf<com.ai.guardian.data.entity.FaceProfileWithTemplates>() }
     var engine by remember { mutableStateOf<FaceBiometricEngine?>(null) }
@@ -69,8 +70,14 @@ fun FaceRecognitionTestScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         engine = FaceBiometricEngine(context)
         try {
-            val dao = com.ai.guardian.data.AppDatabase.getDatabase(context).faceDao()
+            val db = com.ai.guardian.data.AppDatabase.getDatabase(context)
+            val dao = db.faceDao()
+            val settingsDao = db.deviceSettingsDao()
             val profiles = withContext(Dispatchers.IO) {
+                val settings = settingsDao.getSettings()
+                if (settings != null) {
+                    matchingThreshold = settings.matchingThreshold
+                }
                 dao.getAllProfilesWithTemplates()
             }
             faceProfiles.clear()
@@ -201,7 +208,7 @@ fun FaceRecognitionTestScreen(onBack: () -> Unit) {
 
                                                     delay(1200) // visual comparing delay
                                                     
-                                                    val matchResult = engine?.matchAgainstCache(result.embedding)
+                                                    val matchResult = engine?.matchAgainstCache(result.embedding, matchingThreshold)
 
                                                     val elapsed = System.currentTimeMillis() - startTime
                                                     withContext(Dispatchers.Main) {

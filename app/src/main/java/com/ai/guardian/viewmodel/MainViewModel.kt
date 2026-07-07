@@ -113,6 +113,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateMatchingThreshold(threshold: Float) {
+        viewModelScope.launch {
+            val settings = container.deviceSettingsDao.getSettings() ?: DeviceSettingsEntity()
+            container.deviceSettingsDao.insertOrUpdateSettings(settings.copy(matchingThreshold = threshold))
+        }
+    }
+
     fun toggleAppLock(app: AppLockEntity) {
         viewModelScope.launch {
             // Simply insert the app entity which will REPLACE on conflict.
