@@ -19,17 +19,28 @@ enum class FaceQuality {
     TOO_FAR,
     TOO_CLOSE,
     NOT_STRAIGHT,
-    EYES_CLOSED
+    EYES_CLOSED,
+    POOR_LUMINANCE,
+    BLURRED
 }
 
 class FaceBiometricEngine(context: Context) {
     private val faceDetector = FaceDetectorHelper()
     private val mobileFaceNet = MobileFaceNet(context)
+    private val isClosed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private var firstFrameTime: Long = -1L
+    private var bestQualityScore = 0
+    private var consecutiveMediumFrames = 0
+    private var poorQualityStartTime = -1L
+    private var lastInferenceTime = 0L
 
     fun resetWarmup() {
         firstFrameTime = -1L
+        bestQualityScore = 0
+        consecutiveMediumFrames = 0
+        poorQualityStartTime = -1L
+        lastInferenceTime = 0L
     }
 
     // Memory Cache for recognition
@@ -132,53 +143,130 @@ class FaceBiometricEngine(context: Context) {
 
     /**
      * Analyzes a CameraX ImageProxy frame directly.
-     * Checks multiple faces, performs quality verification, and processes embedding if checks pass.
+     * Implements zero-buffer throttling to only run heavy inference on the best frames.
      */
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-    suspend fun analyzeFrame(imageProxy: ImageProxy): VerificationResult = withContext(Dispatchers.Default) {
+    suspend fun analyzeFrame(imageProxy: ImageProxy, lightingState: LightingState): VerificationResult = withContext(Dispatchers.Default) {
         try {
             val mediaImage = imageProxy.image
                 ?: return@withContext VerificationResult.Error("mediaImage is null")
 
             if (firstFrameTime == -1L) {
                 firstFrameTime = System.currentTimeMillis()
+                poorQualityStartTime = -1L
             }
-            if (System.currentTimeMillis() - firstFrameTime < 600) {
+            val now = System.currentTimeMillis()
+            if (now - firstFrameTime < 600) {
                 return@withContext VerificationResult.Warmup
+            }
+            
+            // Step 1: 150ms Cooldown after previous inference
+            if (now - lastInferenceTime < 150) {
+                return@withContext VerificationResult.Warmup // Act as warmup during cooldown
             }
 
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
 
-            // Step 1: Detect faces
+            // Step 2: Detect faces (ML Kit)
             val faces = faceDetector.detectFaces(mediaImage, rotationDegrees)
             if (faces.isEmpty()) {
+                handlePoorQuality(now)
+                if (poorQualityStartTime != -1L && now - poorQualityStartTime > 2000L) {
+                    return@withContext VerificationResult.Guidance(FaceQualityScorer.GUIDANCE_NO_FACE, "Align your face in the frame")
+                }
                 return@withContext VerificationResult.NoFace
             }
             if (faces.size > 1) {
+                poorQualityStartTime = -1L // Reset guidance timer
                 return@withContext VerificationResult.MultipleFaces
             }
 
             val face = faces[0]
 
-            // Step 2: Quality validation before inference
-            val quality = checkFaceQuality(face, imageProxy.width, imageProxy.height)
-            if (quality != FaceQuality.GOOD) {
-                return@withContext VerificationResult.PoorQuality(quality)
+            // Step 3: Lightweight Quality Scoring
+            val qualityResult = FaceQualityScorer.calculateQuality(imageProxy, face)
+            
+            // Adaptive Thresholds based on Environment Lighting and Enrollment Baseline
+            // Get the minimum enrollment baseline among all enrolled users (fallback to 130 if empty)
+            val baselineLuma = templateCache.keys.minOfOrNull { it.enrollmentLuminance } ?: 130
+            val baselineBlur = templateCache.keys.minOfOrNull { it.enrollmentBlurScore } ?: 30
+            
+            val (excellentThreshold, minThreshold) = when (lightingState) {
+                LightingState.EXCELLENT -> Pair(85, 65)
+                LightingState.GOOD      -> Pair(80, 60)
+                LightingState.NORMAL    -> Pair(75, 55)
+                LightingState.DIM       -> Pair(70, 50)
+                LightingState.VERY_DARK -> Pair(65, 45)
             }
+            
+            // If live luminance drops significantly below the enrollment baseline, we require higher overall quality
+            val isDarkerThanBaseline = qualityResult.luminance < baselineLuma - 20
+            val adjustedMinThreshold = if (isDarkerThanBaseline) minThreshold + 5 else minThreshold
+            val adjustedExcellentThreshold = if (isDarkerThanBaseline) excellentThreshold + 5 else excellentThreshold
 
-            // Step 3: Run MobileFaceNet inference
-            var bitmap: Bitmap? = null
-            try {
-                bitmap = imageProxy.toBitmap()
-                val embedding = mobileFaceNet.getFaceEmbedding(bitmap, face.boundingBox, rotationDegrees)
-                    ?: return@withContext VerificationResult.Error("Failed to generate embedding")
-                return@withContext VerificationResult.Success(embedding, face)
-            } finally {
-                bitmap?.recycle()
+            if (qualityResult.score < adjustedMinThreshold) {
+                handlePoorQuality(now)
+                if (poorQualityStartTime != -1L && now - poorQualityStartTime > 2000L) {
+                    val msg = getGuidanceMessage(qualityResult.guidancePriority)
+                    return@withContext VerificationResult.Guidance(qualityResult.guidancePriority, msg, qualityResult.luminance)
+                }
+                return@withContext VerificationResult.PoorQuality(FaceQuality.BLURRED, qualityResult.luminance)
             }
+            
+            poorQualityStartTime = -1L // Quality is acceptable, reset guidance timer
+
+            // Step 4: Zero-Buffer Throttling
+            var shouldProcess = false
+            if (qualityResult.score >= adjustedExcellentThreshold) {
+                shouldProcess = true // Immediate bypass
+            } else {
+                if (qualityResult.score > bestQualityScore || consecutiveMediumFrames >= 3) {
+                    shouldProcess = true // Improved score or timeout reached
+                } else {
+                    consecutiveMediumFrames++
+                    return@withContext VerificationResult.Warmup // Pretend we are still warming up (skipping)
+                }
+            }
+            
+            if (shouldProcess) {
+                bestQualityScore = qualityResult.score
+                consecutiveMediumFrames = 0
+                
+                // Step 5: Run Heavy Inference
+                lastInferenceTime = now
+                var bitmap: Bitmap? = null
+                try {
+                    bitmap = imageProxy.toBitmap()
+                    val embedding = mobileFaceNet.getFaceEmbedding(bitmap, face.boundingBox, rotationDegrees)
+                        ?: return@withContext VerificationResult.Error("Failed to generate embedding")
+                    return@withContext VerificationResult.Success(embedding, face, qualityResult.luminance)
+                } finally {
+                    bitmap?.recycle()
+                }
+            }
+            
+            return@withContext VerificationResult.Warmup
+
         } catch (e: Exception) {
             android.util.Log.e("GuardianAI_Debug", "[AI] analyzeFrame error: ${e.message}", e)
             return@withContext VerificationResult.Error(e.message ?: "Unknown error")
+        }
+    }
+    
+    private fun handlePoorQuality(now: Long) {
+        if (poorQualityStartTime == -1L) {
+            poorQualityStartTime = now
+        }
+    }
+    
+    private fun getGuidanceMessage(priority: Int): String {
+        return when (priority) {
+            FaceQualityScorer.GUIDANCE_NO_FACE -> "Align your face in the frame"
+            FaceQualityScorer.GUIDANCE_IMPROVE_LIGHTING -> "Improve lighting conditions"
+            FaceQualityScorer.GUIDANCE_HOLD_STEADY -> "Hold the phone steady"
+            FaceQualityScorer.GUIDANCE_MOVE_CLOSER -> "Move closer to the camera"
+            FaceQualityScorer.GUIDANCE_LOOK_STRAIGHT -> "Look straight at the camera"
+            else -> "Processing face..."
         }
     }
 
@@ -241,6 +329,7 @@ class FaceBiometricEngine(context: Context) {
     }
 
     fun close() {
+        if (!isClosed.compareAndSet(false, true)) return
         clearCache()
         faceDetector.close()
         mobileFaceNet.close()
@@ -276,15 +365,18 @@ class FaceBiometricEngine(context: Context) {
 }
 
 open class VerificationResult {
+    open val faceLuminance: Int? = null
+
     open class NoFaceDetected : VerificationResult()
     object NoFace : NoFaceDetected()
 
     object MultipleFaces : VerificationResult()
 
     open class Failed(val reason: String) : VerificationResult()
-    class PoorQuality(val quality: FaceQuality) : VerificationResult()
+    class PoorQuality(val quality: FaceQuality, override val faceLuminance: Int? = null) : VerificationResult()
     class Error(val reasonStr: String) : Failed(reasonStr)
     object Warmup : VerificationResult()
 
-    data class Success(val embedding: FloatArray, val mlkitFace: Face) : VerificationResult()
+    data class Success(val embedding: FloatArray, val mlkitFace: Face, override val faceLuminance: Int? = null) : VerificationResult()
+    data class Guidance(val priority: Int, val message: String, override val faceLuminance: Int? = null) : VerificationResult()
 }

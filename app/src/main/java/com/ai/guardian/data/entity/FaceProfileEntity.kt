@@ -11,5 +11,7 @@ data class FaceProfileEntity(
     val id: Long = 0,
     val name: String,
     val avatarColorArgb: Int = Color.Gray.toArgb(),
-    val registrationDate: Long = System.currentTimeMillis()
+    val registrationDate: Long = System.currentTimeMillis(),
+    val enrollmentLuminance: Int = 130,
+    val enrollmentBlurScore: Int = 30
 )

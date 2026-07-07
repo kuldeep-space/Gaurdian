@@ -12,6 +12,7 @@ class AuthenticationSession {
     
     var isScreenBrightened: Boolean = false
     var originalScreenBrightness: Float = -1f
+    var hasDetectedFace: Boolean = false
     
     var secondInferenceConsumed: Boolean = false
     var timeoutJob: Job? = null

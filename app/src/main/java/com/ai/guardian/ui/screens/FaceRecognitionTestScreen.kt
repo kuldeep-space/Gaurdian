@@ -63,6 +63,7 @@ fun FaceRecognitionTestScreen(onBack: () -> Unit) {
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val isProcessingRef = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     var emaLuminance by remember { mutableFloatStateOf(-1f) }
+    var hasDetectedFace by remember { mutableStateOf(false) }
     var currentLightingState by remember { mutableStateOf(com.ai.guardian.ai.LightingState.NORMAL) }
 
     LaunchedEffect(Unit) {
@@ -156,14 +157,26 @@ fun FaceRecognitionTestScreen(onBack: () -> Unit) {
                                         coroutineScope.launch {
                                             val startTime = System.currentTimeMillis()
                                             try {
-                                                val luminance = com.ai.guardian.ai.BrightnessEstimator.estimateLuminance(imageProxy)
-                                                val currentEma = if (emaLuminance < 0f) luminance.toFloat() else {
-                                                    com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA * luminance + (1f - com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA) * emaLuminance
+                                                // Check Lighting Before ML Kit (Stage 1)
+                                                if (!hasDetectedFace) {
+                                                    val luminance = com.ai.guardian.ai.BrightnessEstimator.estimateLuminance(imageProxy)
+                                                    val currentEma = if (emaLuminance < 0f) luminance.toFloat() else {
+                                                        com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA * luminance + (1f - com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA) * emaLuminance
+                                                    }
+                                                    emaLuminance = currentEma
                                                 }
-                                                emaLuminance = currentEma
-                                                currentLightingState = com.ai.guardian.ai.RecognitionPolicyManager.determineLightingState(currentEma)
+                                                currentLightingState = com.ai.guardian.ai.RecognitionPolicyManager.determineLightingState(emaLuminance)
 
-                                                val result = engine?.analyzeFrame(imageProxy)
+                                                val result = engine?.analyzeFrame(imageProxy, currentLightingState)
+                                                
+                                                if (result?.faceLuminance != null) {
+                                                    hasDetectedFace = true
+                                                    val luma = result.faceLuminance!!
+                                                    emaLuminance = if (emaLuminance < 0f) luma.toFloat() else {
+                                                        com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA * luma + (1f - com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA) * emaLuminance
+                                                    }
+                                                }
+                                                
                                                 if (result is VerificationResult.Success) {
                                                     val bitmap = imageProxy.toBitmap()
                                                     val rotation = imageProxy.imageInfo.rotationDegrees

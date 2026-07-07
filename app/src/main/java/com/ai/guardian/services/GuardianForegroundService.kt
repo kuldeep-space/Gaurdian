@@ -78,7 +78,18 @@ class GuardianForegroundService : Service() {
                     putExtra("EXTRA_PACKAGE_NAME", packageName)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 }
-                startActivity(intent)
+                try {
+                    if (!com.ai.guardian.services.AppLockLaunchManager.isLaunching.compareAndSet(false, true)) {
+                        return@launch
+                    }
+                    com.ai.guardian.services.AppLockLaunchManager.scheduleLaunchTimeout()
+                    startActivity(intent)
+                } catch (t: Throwable) {
+                    com.ai.guardian.services.AppLockLaunchManager.reset()
+                    if (com.ai.guardian.BuildConfig.DEBUG) {
+                        android.util.Log.e("GuardianAI_Debug", "Failed to launch AppLockActivity", t)
+                    }
+                }
             }
         }
     }

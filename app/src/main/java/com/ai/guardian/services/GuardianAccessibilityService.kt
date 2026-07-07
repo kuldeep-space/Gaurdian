@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.view.accessibility.AccessibilityEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -25,32 +26,30 @@ class GuardianAccessibilityService : AccessibilityService() {
     private var verificationJob: Job? = null
 
     private var currentPackageName: String = ""
+    private var lastForegroundPackage: String = ""
     private val windowEventFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private var homePackages = setOf<String>()
+
+    private fun updateHomePackages() {
+        val intent = Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_HOME) }
+        val resolveInfos = packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        homePackages = resolveInfos.map { it.activityInfo.packageName }.toSet()
+        if (com.ai.guardian.BuildConfig.DEBUG) {
+            android.util.Log.d("GuardianAI_Debug", "[AS] Discovered Home packages: $homePackages")
+        }
+    }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             android.util.Log.d("GuardianAI_Debug", "[AS] screenReceiver.onReceive() action=${intent?.action}")
             if (intent?.action == Intent.ACTION_SCREEN_OFF) {
-                android.util.Log.d("GuardianAI_Debug", "[AS] SCREEN_OFF received. Invalidating global trusted session and pausing polling.")
-                invalidateTrustedSession()
+                android.util.Log.d("GuardianAI_Debug", "[AS] SCREEN_OFF received. Resetting foreground package states and pausing polling.")
+                currentPackageName = ""
+                lastForegroundPackage = ""
                 verificationJob?.cancel()
             } else if (intent?.action == Intent.ACTION_SCREEN_ON) {
                 android.util.Log.d("GuardianAI_Debug", "[AS] SCREEN_ON received. Resuming periodic verification.")
                 startPeriodicVerification()
-            }
-        }
-    }
-
-    private val systemDialogsReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            android.util.Log.d("GuardianAI_Debug", "[AS] systemDialogsReceiver.onReceive() action=${intent?.action}")
-            if (intent?.action == Intent.ACTION_CLOSE_SYSTEM_DIALOGS) {
-                val reason = intent.getStringExtra("reason")
-                android.util.Log.d("GuardianAI_Debug", "[AS] CLOSE_SYSTEM_DIALOGS reason=$reason")
-                if (reason == "homekey" || reason == "recentapps") {
-                    android.util.Log.d("GuardianAI_Debug", "[AS] Home or Recent Apps pressed. Resetting whitelist.")
-                    resetWhitelist()
-                }
             }
         }
     }
@@ -67,15 +66,19 @@ class GuardianAccessibilityService : AccessibilityService() {
         fun reportSuccessfulAuthentication() {
             val randomDurationMs = kotlin.random.Random.nextLong(60_000L, 180_000L) // 1 to 3 minutes
             globalTrustedAuthExpiryTimestamp = android.os.SystemClock.elapsedRealtime() + randomDurationMs
-            val min = randomDurationMs / 60000
-            val sec = (randomDurationMs % 60000) / 1000
-            android.util.Log.d("GuardianAI_Debug", "[SmartCache] Global trusted session established. Expires in $min min $sec sec")
+            if (com.ai.guardian.BuildConfig.DEBUG) {
+                val min = randomDurationMs / 60000
+                val sec = (randomDurationMs % 60000) / 1000
+                android.util.Log.d("GuardianAI_Debug", "[SmartCache] Authentication Success. Random timeout generated. Global trusted session established. Expires in $min min $sec sec")
+            }
         }
 
         fun invalidateTrustedSession() {
             globalTrustedAuthExpiryTimestamp = 0L
             resetWhitelist()
-            android.util.Log.d("GuardianAI_Debug", "[SmartCache] Global trusted session invalidated")
+            if (com.ai.guardian.BuildConfig.DEBUG) {
+                android.util.Log.d("GuardianAI_Debug", "[SmartCache] Trusted session invalidated")
+            }
         }
 
         // Thread-safe map for package whitelist: packageName -> expiryTimestampMs
@@ -150,19 +153,17 @@ class GuardianAccessibilityService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        updateHomePackages()
         android.util.Log.d("GuardianAI_Debug", "[AS] onCreate() called. PID=${android.os.Process.myPid()}")
         val screenFilter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
         }
-        val dialogsFilter = IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(screenReceiver, screenFilter, Context.RECEIVER_EXPORTED)
-            registerReceiver(systemDialogsReceiver, dialogsFilter, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(screenReceiver, screenFilter)
-            registerReceiver(systemDialogsReceiver, dialogsFilter)
         }
         android.util.Log.d("GuardianAI_Debug", "[AS] Receivers registered. Android SDK=${android.os.Build.VERSION.SDK_INT}")
     }
@@ -237,17 +238,29 @@ class GuardianAccessibilityService : AccessibilityService() {
                     "GuardianAI_Debug",
                     "[AS] verificationJob COMPLETED normally. Should never happen unless scope cancelled."
                 )
-                cause is kotlinx.coroutines.CancellationException -> android.util.Log.w(
-                    "GuardianAI_Debug",
-                    "[AS] verificationJob CANCELLED. Cause: ${cause.message} PID=${android.os.Process.myPid()}"
-                )
-                else -> android.util.Log.e(
-                    "GuardianAI_Debug",
-                    "[AS] verificationJob CRASHED with exception: ${cause::class.simpleName}: ${cause.message} PID=${android.os.Process.myPid()}"
-                )
+                cause is kotlinx.coroutines.CancellationException -> {
+                    if (com.ai.guardian.BuildConfig.DEBUG) {
+                        android.util.Log.w("GuardianAI_Debug", "[AS] verificationJob CANCELLED. Cause: ${cause.message} PID=${android.os.Process.myPid()}")
+                    }
+                }
+                else -> {
+                    if (com.ai.guardian.BuildConfig.DEBUG) {
+                        android.util.Log.e("GuardianAI_Debug", "[AS] verificationJob CRASHED with exception: ${cause::class.simpleName}: ${cause.message} PID=${android.os.Process.myPid()}")
+                    }
+                    // Auto-restart loop to prevent silent failure
+                    serviceScope.launch {
+                        delay(3000)
+                        if (com.ai.guardian.BuildConfig.DEBUG) {
+                            android.util.Log.d("GuardianAI_Debug", "[AS] verificationJob restarting after crash")
+                        }
+                        startPeriodicVerification()
+                    }
+                }
             }
         }
-        android.util.Log.d("GuardianAI_Debug", "[AS] verificationJob registered. isActive=${verificationJob?.isActive}")
+        if (com.ai.guardian.BuildConfig.DEBUG) {
+            android.util.Log.d("GuardianAI_Debug", "[AS] verificationJob registered. isActive=${verificationJob?.isActive}")
+        }
     }
 
     private suspend fun checkRescanTimer() {
@@ -262,7 +275,9 @@ class GuardianAccessibilityService : AccessibilityService() {
         if (isAppProtected) {
             val isSmartCacheEnabled = (settings?.trustedAuthDurationMinutes ?: 1) > 0
             if (isSmartCacheEnabled && globalTrustedAuthExpiryTimestamp > 0 && android.os.SystemClock.elapsedRealtime() > globalTrustedAuthExpiryTimestamp) {
-                android.util.Log.d("GuardianAI_Debug", "[Rescan] Timer expired for $currentPackageName! Forcing re-authentication.")
+                if (com.ai.guardian.BuildConfig.DEBUG) {
+                    android.util.Log.d("GuardianAI_Debug", "[Rescan] Random timeout expired for $currentPackageName! Forcing re-authentication.")
+                }
                 
                 // Reset timer and invalidate session
                 invalidateTrustedSession()
@@ -278,7 +293,18 @@ class GuardianAccessibilityService : AccessibilityService() {
                         putExtra("EXTRA_SHOW_OVERLAY", showOverlay)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                     }
-                    startActivity(intent)
+                    try {
+                        if (!com.ai.guardian.services.AppLockLaunchManager.isLaunching.compareAndSet(false, true)) {
+                            return@withContext
+                        }
+                        com.ai.guardian.services.AppLockLaunchManager.scheduleLaunchTimeout()
+                        startActivity(intent)
+                    } catch (t: Throwable) {
+                        com.ai.guardian.services.AppLockLaunchManager.reset()
+                        if (com.ai.guardian.BuildConfig.DEBUG) {
+                            android.util.Log.e("GuardianAI_Debug", "Failed to launch AppLockActivity", t)
+                        }
+                    }
                 }
             }
         }
@@ -295,7 +321,8 @@ class GuardianAccessibilityService : AccessibilityService() {
         }
 
         if (detectedPackage != currentPackageName) {
-            val prevPackage = currentPackageName
+            lastForegroundPackage = currentPackageName
+            val prevPackage = lastForegroundPackage
 
             // Full authentication state snapshot on every package transition.
             // This single log line captures everything needed to diagnose stale sessions.
@@ -315,9 +342,17 @@ class GuardianAccessibilityService : AccessibilityService() {
                 "\n  PID                     = ${android.os.Process.myPid()}"
             )
 
-            currentPackageName = detectedPackage
             resetSessionIfNeeded(prevPackage, detectedPackage)
-            checkAndLockPackage(detectedPackage)
+
+            if (detectedPackage.isNullOrEmpty() || detectedPackage in homePackages) {
+                currentPackageName = ""
+                if (com.ai.guardian.BuildConfig.DEBUG) {
+                    android.util.Log.d("GuardianAI_Debug", "[AS] Home/Recents/Null detected. Resetting currentPackageName to empty.")
+                }
+            } else {
+                currentPackageName = detectedPackage
+                checkAndLockPackage(detectedPackage)
+            }
         }
     }
 
@@ -375,6 +410,17 @@ class GuardianAccessibilityService : AccessibilityService() {
         ) {
             android.util.Log.d("GuardianAI_Debug", "[AS] resetSession: clearing whitelist for $previousPackage (left foreground)")
             clearWhitelistForPackage(previousPackage)
+
+            if (newPackage in homePackages) {
+                if (com.ai.guardian.BuildConfig.DEBUG) {
+                    android.util.Log.d("GuardianAI_Debug", "[AS] Home Launcher / Recents detected. Invalidating trusted session.")
+                }
+                invalidateTrustedSession()
+            } else if (newPackage == "com.android.systemui") {
+                if (com.ai.guardian.BuildConfig.DEBUG) {
+                    android.util.Log.d("GuardianAI_Debug", "[AS] SystemUI (Notification/Volume/Settings) detected. Preserving trusted session.")
+                }
+            }
         }
     }
 
@@ -406,12 +452,16 @@ class GuardianAccessibilityService : AccessibilityService() {
                 // Check Smart Re-authentication Cache
                 val isSmartCacheEnabled = (settings?.trustedAuthDurationMinutes ?: 1) > 0
                 if (isSmartCacheEnabled && android.os.SystemClock.elapsedRealtime() < globalTrustedAuthExpiryTimestamp) {
-                    android.util.Log.d("GuardianAI_Debug", "[SmartCache] Hit! Skipping face scan for $packageName")
+                    if (com.ai.guardian.BuildConfig.DEBUG) {
+                        android.util.Log.d("GuardianAI_Debug", "[SmartCache] Trusted session restored! Skipping face scan for $packageName")
+                    }
                     whitelistPackage(packageName)
                     return@launch
                 }
 
-                android.util.Log.d("GuardianAI_Debug", "[Accessibility] Launching AppLockActivity for $packageName")
+                if (com.ai.guardian.BuildConfig.DEBUG) {
+                    android.util.Log.d("GuardianAI_Debug", "[Accessibility] Lock launched for $packageName")
+                }
                 val showOverlay = settings?.showLockScreenOverlay ?: true
                 withContext(Dispatchers.Main) {
                     val intent = Intent(applicationContext, com.ai.guardian.ui.screens.AppLockActivity::class.java).apply {
@@ -419,7 +469,18 @@ class GuardianAccessibilityService : AccessibilityService() {
                         putExtra("EXTRA_SHOW_OVERLAY", showOverlay)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                     }
-                    startActivity(intent)
+                    try {
+                        if (!com.ai.guardian.services.AppLockLaunchManager.isLaunching.compareAndSet(false, true)) {
+                            return@withContext
+                        }
+                        com.ai.guardian.services.AppLockLaunchManager.scheduleLaunchTimeout()
+                        startActivity(intent)
+                    } catch (t: Throwable) {
+                        com.ai.guardian.services.AppLockLaunchManager.reset()
+                        if (com.ai.guardian.BuildConfig.DEBUG) {
+                            android.util.Log.e("GuardianAI_Debug", "Failed to launch AppLockActivity", t)
+                        }
+                    }
                 }
             }
         }
@@ -439,11 +500,6 @@ class GuardianAccessibilityService : AccessibilityService() {
             unregisterReceiver(screenReceiver)
         } catch (e: Exception) {
             android.util.Log.w("GuardianAI_Debug", "[AS] screenReceiver already unregistered: ${e.message}")
-        }
-        try {
-            unregisterReceiver(systemDialogsReceiver)
-        } catch (e: Exception) {
-            android.util.Log.w("GuardianAI_Debug", "[AS] systemDialogsReceiver already unregistered: ${e.message}")
         }
         serviceScope.cancel()
     }

@@ -27,7 +27,7 @@ import net.sqlcipher.database.SupportFactory
         AppLockEntity::class,
         RecognitionHistoryEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -92,6 +92,13 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
+                val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+                    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        db.execSQL("ALTER TABLE face_profiles ADD COLUMN enrollmentLuminance INTEGER NOT NULL DEFAULT 130")
+                        db.execSQL("ALTER TABLE face_profiles ADD COLUMN enrollmentBlurScore INTEGER NOT NULL DEFAULT 30")
+                    }
+                }
+
                 val masterKey = MasterKey.Builder(context)
                     .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                     .build()
@@ -140,7 +147,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "guardian_database"
                 )
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .fallbackToDestructiveMigration()
                 .build()
                 INSTANCE = instance

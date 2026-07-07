@@ -7,6 +7,7 @@ enum class AuthenticationState {
     FACE_SEARCHING,
     RECOGNIZING,
     SECOND_INFERENCE,
+    GUIDANCE,
     SUCCESS,
     FAILED,
     CLEANUP

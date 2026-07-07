@@ -41,4 +41,5 @@ object FaceRecognitionConfig {
     const val WARMUP_FRAMES_TO_SKIP = 3
     const val MAXIMUM_WARMUP_TIME_MS = 300L
     const val STABLE_STATE_COUNT_REQUIRED = 3
+    const val APP_LOCK_LAUNCH_TIMEOUT_MS = 3000L
 }

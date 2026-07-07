@@ -291,6 +291,7 @@ fun CaptureStep(
     var scanStatus              by remember { mutableStateOf("Align your face inside the circle") }
     var isCooldown              by remember { mutableStateOf(false) }
     var isStable                by remember { mutableStateOf(false) }
+    var hasDetectedFace         by remember { mutableStateOf(false) }
     var isLightingGood          by remember { mutableStateOf(true) }
     var isDistanceGood          by remember { mutableStateOf(true) }
     var consecutiveStableFrames by remember { mutableIntStateOf(0) }
@@ -442,13 +443,15 @@ fun CaptureStep(
                                         imageProxy.close(); isProcessingRef.set(false); return@setAnalyzer
                                     }
 
-                                    // Check Lighting Before ML Kit
-                                    val luminance = com.ai.guardian.ai.BrightnessEstimator.estimateLuminance(imageProxy)
-                                    val currentEma = if (emaLuminance < 0f) luminance.toFloat() else {
-                                        com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA * luminance + (1f - com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA) * emaLuminance
+                                    // Check Lighting Before ML Kit (Stage 1)
+                                    if (!hasDetectedFace) {
+                                        val luminance = com.ai.guardian.ai.BrightnessEstimator.estimateLuminance(imageProxy)
+                                        val currentEma = if (emaLuminance < 0f) luminance.toFloat() else {
+                                            com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA * luminance + (1f - com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA) * emaLuminance
+                                        }
+                                        emaLuminance = currentEma
                                     }
-                                    emaLuminance = currentEma
-                                    val lightingState = com.ai.guardian.ai.RecognitionPolicyManager.determineLightingState(currentEma)
+                                    val lightingState = com.ai.guardian.ai.RecognitionPolicyManager.determineLightingState(emaLuminance)
                                     currentLightingState = lightingState
                                     val canEnroll = com.ai.guardian.ai.RecognitionPolicyManager.allowEnrollmentCapture(lightingState)
 
@@ -463,7 +466,16 @@ fun CaptureStep(
 
                                     coroutineScope.launch {
                                         try {
-                                            val result = engine?.analyzeFrame(imageProxy)
+                                            val result = engine?.analyzeFrame(imageProxy, currentLightingState)
+                                            
+                                            if (result?.faceLuminance != null) {
+                                                hasDetectedFace = true
+                                                val luma = result.faceLuminance!!
+                                                emaLuminance = if (emaLuminance < 0f) luma.toFloat() else {
+                                                    com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA * luma + (1f - com.ai.guardian.ai.FaceRecognitionConfig.EMA_ALPHA) * emaLuminance
+                                                }
+                                            }
+                                            
                                             if (result is VerificationResult.Success) {
                                                 val face   = result.mlkitFace
                                                 val angleY = face.headEulerAngleY

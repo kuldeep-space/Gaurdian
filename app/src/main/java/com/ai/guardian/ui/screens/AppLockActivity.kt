@@ -50,12 +50,151 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class AppLockActivity : ComponentActivity() {
+    enum class SessionLifecycleState {
+        INITIALIZING,
+        RUNNING,
+        CLEANING_UP,
+        DESTROYED
+    }
+
+    private val cleanedUp = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val sessionInitialized = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val isProcessingRef = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    @Volatile
+    private var sessionState = SessionLifecycleState.INITIALIZING
+
+    private var isCameraBound = false
+    private var activeSession: AuthenticationSession? = null
+    private var isUnlockedRef: Boolean = false
+    private var packageNameRef: String = ""
+
     private var engine: FaceBiometricEngine? = null
     private var cameraExecutor: ExecutorService? = null
     private var camera: Camera? = null
 
+    private fun transitionToState(newState: SessionLifecycleState): Boolean {
+        synchronized(this) {
+            val current = sessionState
+            val isValid = when (current) {
+                SessionLifecycleState.INITIALIZING -> newState == SessionLifecycleState.RUNNING || newState == SessionLifecycleState.CLEANING_UP
+                SessionLifecycleState.RUNNING -> newState == SessionLifecycleState.CLEANING_UP
+                SessionLifecycleState.CLEANING_UP -> newState == SessionLifecycleState.DESTROYED
+                SessionLifecycleState.DESTROYED -> false
+            }
+            if (isValid) {
+                sessionState = newState
+                android.util.Log.d("GuardianAI_Debug", "[Session] Transitioned state: $current -> $newState")
+                return true
+            } else {
+                if (com.ai.guardian.BuildConfig.DEBUG) {
+                    android.util.Log.w("GuardianAI_Debug", "[Session] REJECTED invalid transition: $current -> $newState")
+                }
+                return false
+            }
+        }
+    }
+
+    fun performCleanup(shouldLock: Boolean, logReason: String) {
+        if (!cleanedUp.compareAndSet(false, true)) return
+
+        transitionToState(SessionLifecycleState.CLEANING_UP)
+        android.util.Log.d("GuardianAI_Debug", "[Lock] performCleanup() reason=$logReason shouldLock=$shouldLock")
+
+        // 1. Reset the launch coordinator
+        com.ai.guardian.services.AppLockLaunchManager.reset()
+
+        // 2. Destroy session timeout and resources
+        activeSession?.let { sess ->
+            try {
+                sess.destroy()
+            } catch (e: Exception) {}
+        }
+
+        // 3. Restore exposure/brightness if needed
+        try {
+            if (activeSession?.currentExposureIndex != 0) {
+                camera?.cameraControl?.setExposureCompensationIndex(0)
+            }
+        } catch (e: Exception) {}
+
+        try {
+            if (activeSession?.isScreenBrightened == true && activeSession?.originalScreenBrightness ?: -1f >= 0f) {
+                val attrs = window.attributes
+                attrs.screenBrightness = activeSession?.originalScreenBrightness ?: -1f
+                window.attributes = attrs
+            }
+        } catch (e: Exception) {}
+
+        // 4. Unbind CameraX only if bound
+        if (isCameraBound) {
+            try {
+                val cameraProvider = ProcessCameraProvider.getInstance(this).get()
+                cameraProvider.unbindAll()
+            } catch (e: Exception) {}
+            isCameraBound = false
+        }
+
+        // 5. Shutdown camera executor asynchronously off main thread
+        cameraExecutor?.let { executor ->
+            val localExecutor = executor
+            java.lang.Thread {
+                localExecutor.shutdown()
+                try {
+                    if (!localExecutor.awaitTermination(500, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                        localExecutor.shutdownNow()
+                    }
+                } catch (ie: InterruptedException) {
+                    localExecutor.shutdownNow()
+                    java.lang.Thread.currentThread().interrupt()
+                }
+            }.start()
+        }
+        cameraExecutor = null
+
+        // 6. Close engine
+        try {
+            engine?.close()
+        } catch (e: Exception) {}
+        engine = null
+
+        // 7. Log history asynchronously
+        if (shouldLock && !isUnlockedRef) {
+            val pkg = packageNameRef
+            val applicationCtx = applicationContext
+            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                try {
+                    val container = (applicationCtx as com.ai.guardian.GuardianApplication).container
+                    container.recognitionHistoryDao.insertHistory(
+                        RecognitionHistoryEntity(
+                            profileId = null,
+                            protectedAppPackage = pkg,
+                            timestamp = System.currentTimeMillis(),
+                            authResult = false,
+                            failureReason = logReason,
+                            similarityScore = null,
+                            recognitionTimeMs = null,
+                            deviceOrientation = 0,
+                            recognitionType = "APP_UNLOCK"
+                        )
+                    )
+                } catch (e: Exception) {}
+            }
+
+            com.ai.guardian.services.GuardianAccessibilityService.lockDeviceScreen(this)
+        }
+
+        transitionToState(SessionLifecycleState.DESTROYED)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        com.ai.guardian.services.AppLockLaunchManager.cancelLaunchTimeout()
         super.onCreate(savedInstanceState)
+        if (!sessionInitialized.compareAndSet(false, true)) {
+            android.util.Log.w("GuardianAI_Debug", "[Lock] Activity session already initialized. Skipping recreate.")
+            finish()
+            return
+        }
         val packageName = intent.getStringExtra("EXTRA_PACKAGE_NAME") ?: "Unknown App"
         val showOverlay = intent.getBooleanExtra("EXTRA_SHOW_OVERLAY", true)
         android.util.Log.d("GuardianAI_Debug", "[Lock] onCreate() pkg=$packageName showOverlay=$showOverlay")
@@ -76,22 +215,20 @@ class AppLockActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        performCleanup(shouldLock = false, logReason = "Activity destroyed")
         super.onDestroy()
-        engine?.close()
-        cameraExecutor?.shutdown()
     }
 
     @Composable
     fun InvisibleLockScreen(packageName: String, engine: FaceBiometricEngine?, initialShowOverlay: Boolean) {
         var showIntruderBlock by remember { mutableStateOf(false) }
         var showDebugLogs by remember { mutableStateOf(false) }
+        var hasProfiles by remember { mutableStateOf(false) }
+        var guidanceText by remember { mutableStateOf("") }
         val context = this@AppLockActivity
         val coroutineScope = rememberCoroutineScope()
-        var hasProfiles by remember { mutableStateOf(false) }
         
-        val isProcessingRef = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
         var debugLogs by remember { mutableStateOf(listOf<String>("[System] Initiating Guardian Lock...")) }
-        val isCleanedUp = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
         var isUnlocked by remember { mutableStateOf(false) }
         var isScreenLocked by remember { mutableStateOf(false) }
@@ -106,63 +243,30 @@ class AppLockActivity : ComponentActivity() {
         var pendingBestScore = 0f
         var pendingBestProfile: FaceProfileEntity? = null
 
+        LaunchedEffect(session) {
+            activeSession = session
+        }
+        LaunchedEffect(isUnlocked) {
+            isUnlockedRef = isUnlocked
+        }
+        LaunchedEffect(packageName) {
+            packageNameRef = packageName
+        }
+
         fun addLog(msg: String) {
             android.util.Log.d("GuardianAI_Debug", msg)
             debugLogs = (debugLogs + msg).takeLast(6)
         }
 
-        fun restoreDeviceState() {
-            try {
-                // Restore Exposure
-                if (session.currentExposureIndex != 0 && capabilityManager?.isExposureSupported == true) {
-                    camera?.cameraControl?.setExposureCompensationIndex(0)
-                    session.currentExposureIndex = 0
-                }
-                // Restore Brightness
-                if (session.isScreenBrightened && session.originalScreenBrightness >= 0f) {
-                    val attrs = window.attributes
-                    attrs.screenBrightness = session.originalScreenBrightness
-                    window.attributes = attrs
-                    session.isScreenBrightened = false
-                }
-            } catch (e: Exception) {
-                addLog("[Lock] Failed to restore device state: ${e.message}")
-            }
-        }
-
         fun cleanupAndSecure(shouldLock: Boolean, logReason: String, logType: String = "SECURITY") {
-            if (isCleanedUp.getAndSet(true)) return
+            if (cleanedUp.get()) return
             
             authState = AuthenticationState.CLEANUP
-            session.destroy()
-            restoreDeviceState()
-            
             if (shouldLock && !isUnlocked) {
                 isScreenLocked = true
                 addLog("[Security] $logReason. Locking.")
-                
-                coroutineScope.launch(Dispatchers.IO) {
-                    try {
-                        val logDao = (application as GuardianApplication).container.recognitionHistoryDao
-                        logDao.insertHistory(
-                            RecognitionHistoryEntity(
-                                profileId = null,
-                                protectedAppPackage = packageName,
-                                timestamp = System.currentTimeMillis(),
-                                authResult = false,
-                                failureReason = logReason,
-                                similarityScore = null,
-                                recognitionTimeMs = null,
-                                deviceOrientation = 0,
-                                recognitionType = "APP_UNLOCK"
-                            )
-                        )
-                    } catch (e: Exception) {}
-                }
-                
-                com.ai.guardian.services.GuardianAccessibilityService.lockDeviceScreen(context)
             }
-            
+            performCleanup(shouldLock, logReason)
             finish()
         }
 
@@ -176,6 +280,7 @@ class AppLockActivity : ComponentActivity() {
         }
 
         LaunchedEffect(Unit) {
+            transitionToState(SessionLifecycleState.RUNNING)
             resetTimeout(LightingState.NORMAL)
 
             try {
@@ -210,16 +315,16 @@ class AppLockActivity : ComponentActivity() {
                             .build()
 
                         imageAnalysis.setAnalyzer(cameraExecutor!!) { imageProxy: ImageProxy ->
-                            if (isProcessingRef.getAndSet(true) || !hasProfiles || isUnlocked || isScreenLocked || isCleanedUp.get()) {
+                            if (context.isProcessingRef.getAndSet(true) || !hasProfiles || isUnlocked || isScreenLocked || context.cleanedUp.get()) {
                                 imageProxy.close()
-                                isProcessingRef.set(false)
+                                context.isProcessingRef.set(false)
                                 return@setAnalyzer
                             }
 
                             coroutineScope.launch {
                                 try {
                                     val currentEngine = engine
-                                    if (currentEngine == null || isCleanedUp.get()) return@launch
+                                    if (currentEngine == null || context.cleanedUp.get()) return@launch
 
                                     // 1. WARM-UP Phase
                                     session.framesAnalyzed++
@@ -232,8 +337,10 @@ class AppLockActivity : ComponentActivity() {
                                     // 2. BRIGHTNESS_ANALYSIS Phase
                                     if (RecognitionPolicyManager.shouldSampleBrightness(session.lastBrightnessSampleTime)) {
                                         authState = AuthenticationState.BRIGHTNESS_ANALYSIS
-                                        val luminance = BrightnessEstimator.estimateLuminance(imageProxy)
-                                        session.updateEma(luminance)
+                                        if (!session.hasDetectedFace) {
+                                            val luminance = BrightnessEstimator.estimateLuminance(imageProxy)
+                                            session.updateEma(luminance)
+                                        }
                                         session.lastBrightnessSampleTime = SystemClock.elapsedRealtime()
                                         
                                         val proposedState = RecognitionPolicyManager.determineLightingState(session.emaLuminance)
@@ -263,13 +370,11 @@ class AppLockActivity : ComponentActivity() {
                                                 }
                                                 session.isScreenBrightened = true
                                             }
-                                        } else if (session.isScreenBrightened) {
-                                            restoreDeviceState() // Restore if lighting improves
                                         }
                                     }
 
                                     capabilityManager?.let { cap ->
-                                        val targetExposure = RecognitionPolicyManager.calculateTargetExposureIndex(session.lightingState, cap)
+                                        val targetExposure = if (session.isScreenBrightened) 0 else RecognitionPolicyManager.calculateTargetExposureIndex(session.lightingState, cap)
                                         if (RecognitionPolicyManager.shouldUpdateExposure(targetExposure, session.currentExposureIndex, session.lastExposureUpdateTime)) {
                                             camera?.cameraControl?.setExposureCompensationIndex(targetExposure)
                                             session.currentExposureIndex = targetExposure
@@ -278,10 +383,17 @@ class AppLockActivity : ComponentActivity() {
                                     }
 
                                     // 4. FACE_SEARCHING & RECOGNIZING
-                                    authState = AuthenticationState.FACE_SEARCHING
-                                    val result = currentEngine.analyzeFrame(imageProxy)
+                                    if (authState != AuthenticationState.GUIDANCE) {
+                                        authState = AuthenticationState.FACE_SEARCHING
+                                    }
+                                    val result = currentEngine.analyzeFrame(imageProxy, session.lightingState)
                                     
-                                    if (isUnlocked || isScreenLocked || isCleanedUp.get()) return@launch
+                                    if (result.faceLuminance != null) {
+                                        session.hasDetectedFace = true
+                                        session.updateEma(result.faceLuminance!!)
+                                    }
+                                    
+                                    if (isUnlocked || isScreenLocked || context.cleanedUp.get()) return@launch
 
                                     when (result) {
                                         is VerificationResult.Success -> {
@@ -360,6 +472,14 @@ class AppLockActivity : ComponentActivity() {
                                         is VerificationResult.NoFace -> {
                                             // Passive scanning
                                         }
+                                        is VerificationResult.Guidance -> {
+                                            if (guidanceText != result.message) {
+                                                guidanceText = result.message
+                                            }
+                                            if (authState != AuthenticationState.GUIDANCE) {
+                                                authState = AuthenticationState.GUIDANCE
+                                            }
+                                        }
                                         is VerificationResult.Error -> {
                                             android.util.Log.e("GuardianAI_Debug", "[Lock] Analyzer error: ${result.reason}")
                                         }
@@ -369,14 +489,15 @@ class AppLockActivity : ComponentActivity() {
                                     cleanupAndSecure(shouldLock = true, logReason = "Fatal analyzer error")
                                 } finally {
                                     imageProxy.close()
-                                    isProcessingRef.set(false)
+                                    context.isProcessingRef.set(false)
                                 }
                             }
                         }
 
                         cameraProvider.unbindAll()
-                        camera = cameraProvider.bindToLifecycle(context, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
-                        capabilityManager = CameraCapabilityManager(camera!!)
+                        context.camera = cameraProvider.bindToLifecycle(context, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
+                        context.isCameraBound = true
+                        capabilityManager = CameraCapabilityManager(context.camera!!)
                         
                         android.util.Log.d("GuardianAI_Debug", "[Camera] bindToLifecycle() SUCCESS")
                     } catch (e: Exception) {
@@ -443,8 +564,10 @@ class AppLockActivity : ComponentActivity() {
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        if (session.lightingState == LightingState.VERY_DARK) "Lighting Too Dark" else "Verifying identity...",
-                        color = if (session.lightingState == LightingState.VERY_DARK) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, 
+                        if (authState == AuthenticationState.GUIDANCE && guidanceText.isNotEmpty()) guidanceText 
+                        else if (session.lightingState == LightingState.VERY_DARK) "Lighting Too Dark" 
+                        else "Verifying identity...",
+                        color = if (authState == AuthenticationState.GUIDANCE || session.lightingState == LightingState.VERY_DARK) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, 
                         fontSize = 14.sp, lineHeight = 20.sp
                     )
                     Spacer(modifier = Modifier.height(20.dp))
@@ -504,6 +627,7 @@ class AppLockActivity : ComponentActivity() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         startActivity(intent)
+        performCleanup(shouldLock = false, logReason = "Back pressed")
         finish()
     }
 }
