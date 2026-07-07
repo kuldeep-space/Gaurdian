@@ -27,5 +27,6 @@ class GuardianApplication : Application() {
         }
         
         container = DefaultAppContainer(this)
+        android.util.Log.d("GuardianAI_Phase1", "[Init] GuardianApplication onCreate() finished. Container initialized.")
     }
 }

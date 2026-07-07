@@ -16,6 +16,16 @@ class AuthenticationSession {
     
     var secondInferenceConsumed: Boolean = false
     var timeoutJob: Job? = null
+    var inferenceCount: Int = 0
+
+    // 2-frame embedding ring buffer for averaging borderline matches.
+    // Cleared on face loss, timeout, and session destroy.
+    // Max RAM: 2 × 192 × 4 bytes = 1.5KB.
+    val embeddingBuffer: ArrayDeque<FloatArray> = ArrayDeque(FaceRecognitionConfig.EMBEDDING_RING_BUFFER_SIZE)
+
+    // Guidance hysteresis: tracks last time guidance text was changed.
+    // Prevents flicker when Guidance frames arrive faster than 1 second.
+    var lastGuidanceUpdateTime: Long = 0L
     
     // For warm-up and hysteresis
     var consecutiveLightingStateMatches = 0
@@ -36,5 +46,6 @@ class AuthenticationSession {
     fun destroy() {
         timeoutJob?.cancel()
         timeoutJob = null
+        embeddingBuffer.clear()
     }
 }

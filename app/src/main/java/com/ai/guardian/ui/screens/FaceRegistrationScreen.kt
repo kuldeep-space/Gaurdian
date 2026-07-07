@@ -774,7 +774,7 @@ fun SuccessStep(onFinish: () -> Unit) {
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            "Your face profile has been registered with 15 multi-angle templates and is ready to use.",
+            "Your face profile has been registered with 25 multi-angle templates and is ready to use.",
             fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 22.sp,
             textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 8.dp)
         )

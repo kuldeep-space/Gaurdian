@@ -170,6 +170,7 @@ class GuardianAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        android.util.Log.d("GuardianAI_Phase1", "[Init] GuardianAccessibilityService onServiceConnected() called. PID=${android.os.Process.myPid()}")
         android.util.Log.d("GuardianAI_Debug", "[AS] onServiceConnected() called. PID=${android.os.Process.myPid()}")
         
         // Reset current session state and clear stale whitelist entries

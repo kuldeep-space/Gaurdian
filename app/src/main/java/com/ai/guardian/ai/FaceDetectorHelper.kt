@@ -20,6 +20,7 @@ class FaceDetectorHelper {
             .setMinFaceSize(0.15f)
             .build()
         detector = FaceDetection.getClient(options)
+        android.util.Log.d("GuardianAI_Phase1", "[Init] ML Kit FaceDetector initialized.")
     }
 
     suspend fun detectFaces(image: Image, rotationDegrees: Int): List<Face> {

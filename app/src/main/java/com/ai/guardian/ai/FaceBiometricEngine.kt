@@ -29,9 +29,14 @@ class FaceBiometricEngine(context: Context) {
     private val mobileFaceNet = MobileFaceNet(context)
     private val isClosed = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    init {
+        android.util.Log.d("GuardianAI_Phase1", "[Init] FaceBiometricEngine initialized (FaceDetector & MobileFaceNet instantiated).")
+    }
+
     private var firstFrameTime: Long = -1L
     private var bestQualityScore = 0
     private var consecutiveMediumFrames = 0
+    private var consecutiveNoFaceFrames = 0
     private var poorQualityStartTime = -1L
     private var lastInferenceTime = 0L
 
@@ -39,6 +44,7 @@ class FaceBiometricEngine(context: Context) {
         firstFrameTime = -1L
         bestQualityScore = 0
         consecutiveMediumFrames = 0
+        consecutiveNoFaceFrames = 0
         poorQualityStartTime = -1L
         lastInferenceTime = 0L
     }
@@ -156,7 +162,9 @@ class FaceBiometricEngine(context: Context) {
                 poorQualityStartTime = -1L
             }
             val now = System.currentTimeMillis()
-            if (now - firstFrameTime < 600) {
+            // Use configurable warmup instead of hardcoded 600ms.
+            // ENGINE_WARMUP_MS = 400ms — shorter on capable devices, still allows AE to settle.
+            if (now - firstFrameTime < FaceRecognitionConfig.ENGINE_WARMUP_MS) {
                 return@withContext VerificationResult.Warmup
             }
             
@@ -169,13 +177,19 @@ class FaceBiometricEngine(context: Context) {
 
             // Step 2: Detect faces (ML Kit)
             val faces = faceDetector.detectFaces(mediaImage, rotationDegrees)
+            android.util.Log.d("GuardianAI_Phase2", "[Pipeline] ML Kit FaceDetector returned ${faces.size} faces.")
             if (faces.isEmpty()) {
+                consecutiveNoFaceFrames++
+                if (consecutiveNoFaceFrames >= 3) {
+                    bestQualityScore = 0
+                }
                 handlePoorQuality(now)
                 if (poorQualityStartTime != -1L && now - poorQualityStartTime > 2000L) {
                     return@withContext VerificationResult.Guidance(FaceQualityScorer.GUIDANCE_NO_FACE, "Align your face in the frame")
                 }
                 return@withContext VerificationResult.NoFace
             }
+            consecutiveNoFaceFrames = 0
             if (faces.size > 1) {
                 poorQualityStartTime = -1L // Reset guidance timer
                 return@withContext VerificationResult.MultipleFaces
@@ -231,15 +245,29 @@ class FaceBiometricEngine(context: Context) {
             if (shouldProcess) {
                 bestQualityScore = qualityResult.score
                 consecutiveMediumFrames = 0
-                
+
                 // Step 5: Run Heavy Inference
                 lastInferenceTime = now
                 var bitmap: Bitmap? = null
+                var uprightFace: Bitmap? = null
+                var croppedFace: Bitmap? = null
                 try {
                     bitmap = imageProxy.toBitmap()
-                    val embedding = mobileFaceNet.getFaceEmbedding(bitmap, face.boundingBox, rotationDegrees)
-                        ?: return@withContext VerificationResult.Error("Failed to generate embedding")
-                    return@withContext VerificationResult.Success(embedding, face, qualityResult.luminance)
+                    android.util.Log.d("GuardianAI_Phase2", "[Pipeline] imageProxy.toBitmap() Dimens: ${bitmap.width}x${bitmap.height}, TargetRotation: $rotationDegrees")
+                    
+                    val embedding = mobileFaceNet.getFaceEmbedding(
+                        bitmap,
+                        face.boundingBox,
+                        rotationDegrees,
+                        faceLuminance = qualityResult.luminance
+                    ) ?: return@withContext VerificationResult.Error("Failed to generate embedding")
+                    return@withContext VerificationResult.Success(
+                        embedding,
+                        face,
+                        qualityResult.luminance,
+                        qualityResult.score,
+                        qualityResult.blurScore
+                    )
                 } finally {
                     bitmap?.recycle()
                 }
@@ -377,6 +405,12 @@ open class VerificationResult {
     class Error(val reasonStr: String) : Failed(reasonStr)
     object Warmup : VerificationResult()
 
-    data class Success(val embedding: FloatArray, val mlkitFace: Face, override val faceLuminance: Int? = null) : VerificationResult()
+    data class Success(
+        val embedding: FloatArray,
+        val mlkitFace: Face,
+        override val faceLuminance: Int? = null,
+        val qualityScore: Int = 0,
+        val blurScore: Int = 0
+    ) : VerificationResult()
     data class Guidance(val priority: Int, val message: String, override val faceLuminance: Int? = null) : VerificationResult()
 }

@@ -24,6 +24,7 @@ class GuardianForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        android.util.Log.d("GuardianAI_Phase1", "[Init] GuardianForegroundService onCreate() called. PID=${android.os.Process.myPid()}")
         android.util.Log.d("GuardianAI_Debug", "[FS] onCreate() called. PID=${android.os.Process.myPid()}")
         startForegroundService()
     }

@@ -80,24 +80,32 @@ object FaceQualityScorer {
                     val originalPos = buffer.position()
                     buffer.position(0)
 
-                    for (y in top until bottom step stepY) {
+                    // Dual-direction Laplacian: horizontal + vertical gradients.
+                    // In low light the Y-plane is uniformly dark; a horizontal-only gradient
+                    // gives near-zero blur scores even for sharp faces. Adding the vertical
+                    // direction doubles gradient signal and correctly identifies true sharpness.
+                    for (y in top until (bottom - stepY) step stepY) {
                         val rowOffset = y * rowStride
+                        val nextRowOffset = (y + stepY) * rowStride
                         for (x in left until (right - stepX) step stepX) {
                             val idx1 = rowOffset + x * pixelStride
-                            val idx2 = rowOffset + (x + stepX) * pixelStride
+                            val idx2 = rowOffset + (x + stepX) * pixelStride  // horizontal neighbor
+                            val idx3 = nextRowOffset + x * pixelStride         // vertical neighbor
 
-                            if (idx2 < buffer.capacity()) {
+                            if (idx2 < buffer.capacity() && idx3 < buffer.capacity()) {
                                 val p1 = buffer.get(idx1).toInt() and 0xFF
                                 val p2 = buffer.get(idx2).toInt() and 0xFF
+                                val p3 = buffer.get(idx3).toInt() and 0xFF
 
                                 sumLuma += p1
-                                sumLaplacian += Math.abs(p1 - p2)
+                                // Sum horizontal + vertical absolute differences and divide by 2 to maintain threshold scale
+                                sumLaplacian += (Math.abs(p1 - p2) + Math.abs(p1 - p3)) / 2
                                 pixelCount++
                                 gradCount++
                             }
                         }
                     }
-                    
+
                     // Restore buffer position for other analyzers
                     buffer.position(originalPos)
                 } catch (e: Exception) {
@@ -118,32 +126,43 @@ object FaceQualityScorer {
                 guidance = GUIDANCE_IMPROVE_LIGHTING
             }
         }
-        
-        if (blurScore < 15) {
+
+        // Luminance-normalized blur score.
+        // Raw blur in low light is structurally suppressed (dark pixels have low gradients
+        // even when the image is sharp). Normalizing against luminance corrects for this:
+        // a sharp face at luma=50 gets a comparable blur score to a sharp face at luma=150.
+        val normalizedBlurScore = if (luminance > 20) {
+            (blurScore.toFloat() * 128f / luminance).toInt().coerceIn(0, 80)
+        } else {
+            blurScore
+        }
+
+        if (normalizedBlurScore < 12) {
             if (guidance == GUIDANCE_NONE || guidance > GUIDANCE_HOLD_STEADY) {
                 guidance = GUIDANCE_HOLD_STEADY
             }
         }
 
-        // Compute 0-100 normalized score
-        // Blur (40% weight): score 25+ is excellent
-        val normBlur = (blurScore / 25f).coerceIn(0f, 1f) * 40f
-        
-        // Luminance (30% weight): score 120+ is excellent
-        val normLuma = (luminance / 120f).coerceIn(0f, 1f) * 30f
-        
+        // Score weights: Blur 30%, Luminance 40%, Pose/Size 30%.
+        // Previous: Blur 40% / Luma 30% — in low light blur was suppressed so 40% of the
+        // score was near-zero for sharp dark faces, causing them to fail the quality gate.
+        // Luminance at 40% now correctly penalizes true darkness while not penalizing
+        // dark-but-sharp frames that previously scored < min threshold unfairly.
+        val normBlur = (normalizedBlurScore / 25f).coerceIn(0f, 1f) * 30f
+        val normLuma = (luminance / 120f).coerceIn(0f, 1f) * 40f
+
         // Size & Pose (30% weight)
         var normPose = 30f
         if (guidance == GUIDANCE_MOVE_CLOSER) normPose -= 15f
         if (guidance == GUIDANCE_LOOK_STRAIGHT) normPose -= 15f
         if (face.leftEyeOpenProbability != null && face.leftEyeOpenProbability!! < 0.2f) normPose -= 10f
-        
+
         val finalScore = (normBlur + normLuma + normPose).toInt().coerceIn(0, 100)
 
         return QualityResult(
             score = finalScore,
             luminance = luminance,
-            blurScore = blurScore,
+            blurScore = normalizedBlurScore,
             guidancePriority = guidance
         )
     }

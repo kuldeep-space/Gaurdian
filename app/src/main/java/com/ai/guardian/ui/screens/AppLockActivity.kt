@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.sqrt
 
 class AppLockActivity : ComponentActivity() {
     enum class SessionLifecycleState {
@@ -238,10 +239,6 @@ class AppLockActivity : ComponentActivity() {
         val session = remember { AuthenticationSession() }
         var capabilityManager: CameraCapabilityManager? by remember { mutableStateOf(null) }
         var authState by remember { mutableStateOf(AuthenticationState.INITIALIZING) }
-        
-        // Second inference state
-        var pendingBestScore = 0f
-        var pendingBestProfile: FaceProfileEntity? = null
 
         LaunchedEffect(session) {
             activeSession = session
@@ -262,6 +259,7 @@ class AppLockActivity : ComponentActivity() {
             if (cleanedUp.get()) return
             
             authState = AuthenticationState.CLEANUP
+            engine?.resetWarmup() // Reset state for the next session
             if (shouldLock && !isUnlocked) {
                 isScreenLocked = true
                 addLog("[Security] $logReason. Locking.")
@@ -281,6 +279,7 @@ class AppLockActivity : ComponentActivity() {
 
         LaunchedEffect(Unit) {
             transitionToState(SessionLifecycleState.RUNNING)
+            engine?.resetWarmup()
             resetTimeout(LightingState.NORMAL)
 
             try {
@@ -309,13 +308,16 @@ class AppLockActivity : ComponentActivity() {
                 cameraProviderFuture.addListener({
                     try {
                         val cameraProvider = cameraProviderFuture.get()
+                        android.util.Log.d("GuardianAI_Phase1", "[Init] CameraX ProcessCameraProvider ready.")
                         val imageAnalysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .setTargetResolution(android.util.Size(640, 480))
                             .build()
 
                         imageAnalysis.setAnalyzer(cameraExecutor!!) { imageProxy: ImageProxy ->
+                            android.util.Log.d("GuardianAI_Phase2", "[Camera] ImageAnalysis received frame. Thread=${java.lang.Thread.currentThread().name}, Timestamp=${imageProxy.imageInfo.timestamp}, Rotation=${imageProxy.imageInfo.rotationDegrees}")
                             if (context.isProcessingRef.getAndSet(true) || !hasProfiles || isUnlocked || isScreenLocked || context.cleanedUp.get()) {
+                                android.util.Log.d("GuardianAI_Phase2", "[Camera] Frame DROPPED (Throttling). ImageProxy close()")
                                 imageProxy.close()
                                 context.isProcessingRef.set(false)
                                 return@setAnalyzer
@@ -359,17 +361,17 @@ class AppLockActivity : ComponentActivity() {
                                     }
 
                                     // 3. APPLY POLICIES (Screen Brightness & Camera Exposure)
-                                    withContext(Dispatchers.Main) {
-                                        if (RecognitionPolicyManager.shouldIncreaseScreenBrightness(session.lightingState)) {
-                                            if (!session.isScreenBrightened) {
-                                                val attrs = window.attributes
-                                                session.originalScreenBrightness = attrs.screenBrightness
-                                                if (attrs.screenBrightness != 1.0f) {
-                                                    attrs.screenBrightness = 1.0f
-                                                    window.attributes = attrs
-                                                }
-                                                session.isScreenBrightened = true
+                                    // Guard: only enter Main thread context when a change is actually needed.
+                                    // Previously withContext(Dispatchers.Main) ran every frame even when already brightened.
+                                    if (RecognitionPolicyManager.shouldIncreaseScreenBrightness(session.lightingState) && !session.isScreenBrightened) {
+                                        withContext(Dispatchers.Main) {
+                                            val attrs = window.attributes
+                                            session.originalScreenBrightness = attrs.screenBrightness
+                                            if (attrs.screenBrightness != 1.0f) {
+                                                attrs.screenBrightness = 1.0f
+                                                window.attributes = attrs
                                             }
+                                            session.isScreenBrightened = true
                                         }
                                     }
 
@@ -397,8 +399,8 @@ class AppLockActivity : ComponentActivity() {
 
                                     when (result) {
                                         is VerificationResult.Success -> {
+                                            session.inferenceCount++
                                             authState = AuthenticationState.RECOGNIZING
-                                            addLog("[AI] Face detected.")
                                             
                                             val matchResult = currentEngine.matchAgainstCache(result.embedding)
 
@@ -406,28 +408,56 @@ class AppLockActivity : ComponentActivity() {
                                                 val score = matchResult.second
                                                 val profile = matchResult.first
 
-                                                val needsSecondInference = RecognitionPolicyManager.shouldRunSecondInference(
-                                                    session.lightingState, score, session.secondInferenceConsumed, true
-                                                )
-
-                                                if (needsSecondInference) {
-                                                    authState = AuthenticationState.SECOND_INFERENCE
-                                                    session.secondInferenceConsumed = true
-                                                    pendingBestScore = score
-                                                    pendingBestProfile = profile
-                                                    addLog("[AI] Borderline score ($score). Triggering second inference.")
+                                                // Fast path: high-confidence match — unlock immediately without buffering.
+                                                // Avoids any wait on bright-light or perfectly aligned frames.
+                                                if (score >= FaceRecognitionConfig.MATCH_THRESHOLD + FaceRecognitionConfig.EMBEDDING_FAST_UNLOCK_MARGIN) {
+                                                    session.embeddingBuffer.clear()
+                                                    authState = AuthenticationState.SUCCESS
+                                                    val duration = SystemClock.elapsedRealtime() - session.sessionStartTime
+                                                    addLog("[DEBUG_REPORT] ===============================")
+                                                    addLog("[DEBUG_REPORT] Auth Duration: ${duration}ms")
+                                                    addLog("[DEBUG_REPORT] Inferences: ${session.inferenceCount} | Accepted: ${session.inferenceCount}")
+                                                    addLog("[DEBUG_REPORT] Qual: ${result.qualityScore} | Blur: ${result.blurScore} | Luma: ${result.faceLuminance}")
+                                                    addLog("[DEBUG_REPORT] Similarity Score: $score (Fast)")
+                                                    addLog("[DEBUG_REPORT] ===============================")
+                                                    isUnlocked = true
+                                                    withContext(Dispatchers.Main) {
+                                                        com.ai.guardian.services.GuardianAccessibilityService.reportSuccessfulAuthentication()
+                                                        com.ai.guardian.services.GuardianAccessibilityService.whitelistPackage(packageName)
+                                                        val whitelistIntent = Intent(context, GuardianForegroundService::class.java).apply {
+                                                            action = GuardianForegroundService.ACTION_WHITELIST_PACKAGE
+                                                            putExtra(GuardianForegroundService.EXTRA_PACKAGE_NAME, packageName)
+                                                        }
+                                                        ContextCompat.startForegroundService(context, whitelistIntent)
+                                                        cleanupAndSecure(shouldLock = false, logReason = "Unlocked")
+                                                    }
                                                     return@launch
                                                 }
 
-                                                // Final Decision
-                                                val finalScore = maxOf(score, pendingBestScore)
-                                                val finalProfile = if (finalScore == pendingBestScore && pendingBestProfile != null) pendingBestProfile else profile
+                                                // Borderline match: buffer embedding and wait for a 2nd frame.
+                                                // Averaging 2 embeddings cancels zero-mean sensor noise, improving
+                                                // cosine similarity stability in low-light without security loss.
+                                                session.embeddingBuffer.add(result.embedding)
+                                                if (session.embeddingBuffer.size < FaceRecognitionConfig.EMBEDDING_RING_BUFFER_SIZE) {
+                                                    authState = AuthenticationState.SECOND_INFERENCE
+                                                    return@launch
+                                                }
 
-                                                if (finalScore >= FaceRecognitionConfig.MATCH_THRESHOLD) {
+                                                // Buffer full: compute averaged embedding and re-match.
+                                                val averaged = averageAndNormalize(session.embeddingBuffer.toList())
+                                                session.embeddingBuffer.clear()
+                                                val avgMatch = currentEngine.matchAgainstCache(averaged)
+
+                                                if (avgMatch != null && avgMatch.second >= FaceRecognitionConfig.MATCH_THRESHOLD) {
                                                     authState = AuthenticationState.SUCCESS
-                                                    addLog("[AI] Match! Score: $finalScore. Unlocking.")
+                                                    val duration = SystemClock.elapsedRealtime() - session.sessionStartTime
+                                                    addLog("[DEBUG_REPORT] ===============================")
+                                                    addLog("[DEBUG_REPORT] Auth Duration: ${duration}ms")
+                                                    addLog("[DEBUG_REPORT] Inferences: ${session.inferenceCount} | Accepted: ${session.inferenceCount}")
+                                                    addLog("[DEBUG_REPORT] Qual: ${result.qualityScore} | Blur: ${result.blurScore} | Luma: ${result.faceLuminance}")
+                                                    addLog("[DEBUG_REPORT] Similarity Score: ${avgMatch.second} (Avg)")
+                                                    addLog("[DEBUG_REPORT] ===============================")
                                                     isUnlocked = true
-                                                    
                                                     withContext(Dispatchers.Main) {
                                                         com.ai.guardian.services.GuardianAccessibilityService.reportSuccessfulAuthentication()
                                                         com.ai.guardian.services.GuardianAccessibilityService.whitelistPackage(packageName)
@@ -439,18 +469,12 @@ class AppLockActivity : ComponentActivity() {
                                                         cleanupAndSecure(shouldLock = false, logReason = "Unlocked")
                                                     }
                                                 } else {
-                                                    authState = AuthenticationState.FAILED
-                                                    cleanupAndSecure(shouldLock = true, logReason = "Match failed on second inference", logType = "UNAUTHORIZED_ACCESS")
+                                                    addLog("[AI] Match failed after embedding average. Retrying...")
                                                 }
                                             } else {
-                                                // Handle no match but we might have a pending score from first inference that is borderline?
-                                                // If we had a pending score but this frame gives no match at all, we should still evaluate the pending score.
-                                                if (pendingBestScore >= FaceRecognitionConfig.MATCH_THRESHOLD) {
-                                                    // This case shouldn't happen because pending score is by definition borderline (so it could be just below threshold, or just above).
-                                                    // If pending score was above threshold but within margin, we could use it.
-                                                }
-                                                authState = AuthenticationState.FAILED
-                                                cleanupAndSecure(shouldLock = true, logReason = "Unknown face detected", logType = "UNAUTHORIZED_ACCESS")
+                                                // No match: clear buffer and reject.
+                                                session.embeddingBuffer.clear()
+                                                addLog("[AI] Unknown face detected. Retrying...")
                                             }
                                         }
                                         is VerificationResult.MultipleFaces -> {
@@ -473,8 +497,15 @@ class AppLockActivity : ComponentActivity() {
                                             // Passive scanning
                                         }
                                         is VerificationResult.Guidance -> {
-                                            if (guidanceText != result.message) {
-                                                guidanceText = result.message
+                                            // Hysteresis: only update guidance text if at least GUIDANCE_UPDATE_MIN_MS
+                                            // has elapsed since the last change. Prevents rapid flicker between
+                                            // messages when Guidance results arrive at camera frame rate.
+                                            val now = System.currentTimeMillis()
+                                            if (now - session.lastGuidanceUpdateTime >= FaceRecognitionConfig.GUIDANCE_UPDATE_MIN_MS) {
+                                                if (guidanceText != result.message) {
+                                                    guidanceText = result.message
+                                                }
+                                                session.lastGuidanceUpdateTime = now
                                             }
                                             if (authState != AuthenticationState.GUIDANCE) {
                                                 authState = AuthenticationState.GUIDANCE
@@ -488,6 +519,7 @@ class AppLockActivity : ComponentActivity() {
                                     android.util.Log.e("GuardianAI_Debug", "[Lock] Error during frame analysis", e)
                                     cleanupAndSecure(shouldLock = true, logReason = "Fatal analyzer error")
                                 } finally {
+                                    android.util.Log.d("GuardianAI_Phase2", "[Camera] Executor finished block. ImageProxy close()")
                                     imageProxy.close()
                                     context.isProcessingRef.set(false)
                                 }
@@ -620,6 +652,35 @@ class AppLockActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Computes the element-wise arithmetic mean of a list of embeddings and L2-normalizes the result.
+     * Used by the 2-frame ring buffer to cancel zero-mean sensor noise in low-light frames.
+     * Cost: O(N × D) float additions where N=2 frames and D=192 dimensions = 384 ops. Negligible.
+     */
+    private fun averageAndNormalize(embeddings: List<FloatArray>): FloatArray {
+        if (embeddings.isEmpty()) return FloatArray(192)
+        val dim = embeddings[0].size
+        val avg = FloatArray(dim)
+        for (emb in embeddings) {
+            for (i in emb.indices) {
+                avg[i] += emb[i]
+            }
+        }
+        val n = embeddings.size.toFloat()
+        for (i in avg.indices) {
+            avg[i] /= n
+        }
+        // L2 normalization: ensures the averaged vector rests on the unit hypersphere
+        // for correct cosine similarity comparison against the stored template.
+        var sum = 0f
+        for (v in avg) sum += v * v
+        val norm = sqrt(sum)
+        if (norm > 0f) {
+            for (i in avg.indices) avg[i] /= norm
+        }
+        return avg
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         val intent = Intent(Intent.ACTION_MAIN).apply {
@@ -631,3 +692,4 @@ class AppLockActivity : ComponentActivity() {
         finish()
     }
 }
+
