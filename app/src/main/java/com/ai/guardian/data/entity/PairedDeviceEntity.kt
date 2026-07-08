@@ -16,5 +16,10 @@ data class PairedDeviceEntity(
      * False → this record represents a Child device that THIS device manages.
      *         This device is the PARENT. Guardian lock screen must NOT be shown.
      */
-    val isParentDevice: Boolean = false
+    val isParentDevice: Boolean = false,
+    val parentPublicKeyId: String? = null,
+    val parentPublicKeyPem: String? = null,
+    val parentKeyVersion: Int = 0,
+    val parentKeyCreatedAt: Long = 0L,
+    val parentKeyExpiresAt: Long? = null
 )

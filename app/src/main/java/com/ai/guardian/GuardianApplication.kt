@@ -11,7 +11,7 @@ class GuardianApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         
-        if (BuildConfig.DEBUG) {
+        /* if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(
                 StrictMode.ThreadPolicy.Builder()
                     .detectAll()
@@ -24,7 +24,7 @@ class GuardianApplication : Application() {
                     .penaltyLog()
                     .build()
             )
-        }
+        } */
         
         container = DefaultAppContainer(this)
         android.util.Log.d("GuardianAI_Phase1", "[Init] GuardianApplication onCreate() finished. Container initialized.")

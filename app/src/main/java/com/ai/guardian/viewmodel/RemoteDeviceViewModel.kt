@@ -137,4 +137,25 @@ class RemoteDeviceViewModel(application: Application) : AndroidViewModel(applica
             }
         }
     }
+
+    fun decryptChildPin(state: Map<String, Any>?): String? {
+        if (state == null) return null
+        val childUuid = _deviceUuid.value ?: return null
+        val app = getApplication<com.ai.guardian.GuardianApplication>()
+        val parentUuid = app.container.deviceSyncManager.deviceUuid
+        
+        val decryptedChars = com.ai.guardian.security.PinSyncManager.getInstance(app)
+            .decryptReceivedPayload(
+                state = state,
+                parentKeyManager = app.container.parentKeyManager,
+                currentParentId = parentUuid,
+                currentChildId = childUuid,
+                currentPairId = parentUuid
+            ) ?: return null
+            
+        val pinString = String(decryptedChars)
+        // Immediately zero-out the decrypted character array for security
+        decryptedChars.fill('\u0000')
+        return pinString
+    }
 }

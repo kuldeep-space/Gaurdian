@@ -19,7 +19,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
+import android.content.Context
+
 class PairingManager(
+    private val context: Context,
     private val deviceSyncManager: DeviceSyncManager,
     private val pairedDeviceDao: PairedDeviceDao,
     private val syncEngineManager: SyncEngineManager
@@ -96,7 +99,12 @@ class PairingManager(
                                 uuid = request.requesterId,
                                 deviceName = request.requesterName.takeIf { it.isNotBlank() } ?: "Parent Device",
                                 pairingKey = request.pairCode,
-                                isParentDevice = true
+                                isParentDevice = true,
+                                parentPublicKeyId = request.keyId,
+                                parentPublicKeyPem = request.publicKeyPem,
+                                parentKeyVersion = request.keyVersion,
+                                parentKeyCreatedAt = request.createdAt,
+                                parentKeyExpiresAt = null
                             )
                             pairedDeviceDao.insertPairedDevice(entity)
                             
@@ -110,14 +118,17 @@ class PairingManager(
 
                             // 4. Invalidate pair code
                             deviceSyncManager.regeneratePairCode()
-                            
+                                                        
                             // 5. Start SyncEngineManager
                             syncEngineManager.start()
-                            
+                             
                             // 6. Bootstrap Recovery (trigger immediate heartbeat presence/state sync)
                             syncEngineManager.triggerImmediateHeartbeat()
 
-                            // 7. Update Firestore status to COMPLETED
+                            // 7. Trigger E2EE PIN sync
+                            com.ai.guardian.security.PinSyncManager.getInstance(context).triggerSync()
+
+                            // 8. Update Firestore status to COMPLETED
                             docRef.update("status", SyncStatus.COMPLETED.name).await()
                             
                             Log.d("PairingManager", "Pairing Request completed successfully in Firestore.")

@@ -27,4 +27,6 @@ interface PairedDeviceDao {
 
     @Query("SELECT * FROM paired_devices")
     suspend fun getAllPairedDevicesSynchronous(): List<PairedDeviceEntity>
+    @Query("SELECT * FROM paired_devices WHERE isParentDevice = 1 LIMIT 1")
+    suspend fun getParentDevice(): PairedDeviceEntity?
 }

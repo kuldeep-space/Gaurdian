@@ -566,23 +566,25 @@ class GuardianAccessibilityService : AccessibilityService() {
             val maintenanceActive = com.ai.guardian.security.MaintenanceModeManager.isMaintenanceModeActive()
             
             if (isPinConfigured && !maintenanceActive) {
+                android.util.Log.d("GuardianAI_Debug", "[LOCK_TRACE] Before isSensitiveSettingsScreen: package=$packageName, currentClassName=$currentClassName")
                 val (isSensitive, reason) = isSensitiveSettingsScreen(packageName)
-                    if (isSensitive) {
-                        android.util.Log.d("GuardianAI_Debug", "[PinGate] Sensitive Settings detected: $reason. Launching PinVerificationActivity.")
-                        withContext(Dispatchers.Main) {
-                            val intent = Intent(applicationContext, com.ai.guardian.ui.screens.PinVerificationActivity::class.java).apply {
-                                putExtra("EXTRA_ACTION_NAME", reason)
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                            }
-                            try {
-                                startActivity(intent)
-                            } catch (t: Throwable) {
-                                android.util.Log.e("GuardianAI_Debug", "[PinGate] Failed to launch PinVerificationActivity", t)
-                            }
+                android.util.Log.d("GuardianAI_Debug", "[LOCK_TRACE] After isSensitiveSettingsScreen: reason=$reason, result=$isSensitive")
+                if (isSensitive) {
+                    android.util.Log.d("GuardianAI_Debug", "[PinGate] Sensitive Settings detected: $reason. Launching PinVerificationActivity.")
+                    withContext(Dispatchers.Main) {
+                        val intent = Intent(applicationContext, com.ai.guardian.ui.screens.PinVerificationActivity::class.java).apply {
+                            putExtra("EXTRA_ACTION_NAME", reason)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                         }
-                        return@launch
+                        try {
+                            startActivity(intent)
+                        } catch (t: Throwable) {
+                            android.util.Log.e("GuardianAI_Debug", "[PinGate] Failed to launch PinVerificationActivity", t)
+                        }
                     }
+                    return@launch
                 }
+            }
 
             // 1. Emergency Remote Lock Check
             val isRemotelyLocked = settings?.isRemotelyLocked ?: false
@@ -597,7 +599,10 @@ class GuardianAccessibilityService : AccessibilityService() {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                     }
                     try {
-                        if (!com.ai.guardian.services.AppLockLaunchManager.isLaunching.compareAndSet(false, true)) {
+                        val currentVal = com.ai.guardian.services.AppLockLaunchManager.isLaunching.get()
+                        val res = com.ai.guardian.services.AppLockLaunchManager.isLaunching.compareAndSet(false, true)
+                        android.util.Log.d("GuardianAI_Debug", "[LOCK_TRACE] Before remote compareAndSet: current=$currentVal, result=$res")
+                        if (!res) {
                             return@withContext
                         }
                         com.ai.guardian.services.AppLockLaunchManager.scheduleLaunchTimeout()
@@ -641,7 +646,10 @@ class GuardianAccessibilityService : AccessibilityService() {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                     }
                     try {
-                        if (!com.ai.guardian.services.AppLockLaunchManager.isLaunching.compareAndSet(false, true)) {
+                        val currentVal = com.ai.guardian.services.AppLockLaunchManager.isLaunching.get()
+                        val res = com.ai.guardian.services.AppLockLaunchManager.isLaunching.compareAndSet(false, true)
+                        android.util.Log.d("GuardianAI_Debug", "[LOCK_TRACE] Before standard compareAndSet: current=$currentVal, result=$res")
+                        if (!res) {
                             return@withContext
                         }
                         com.ai.guardian.services.AppLockLaunchManager.scheduleLaunchTimeout()

@@ -45,6 +45,10 @@ class GuardianForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         android.util.Log.d("GuardianAI_Debug", "[FS] onStartCommand() action=$action")
+        
+        val container = (applicationContext as com.ai.guardian.GuardianApplication).container
+        container.syncEngineManager.start()
+        
         if (action == ACTION_PACKAGE_CHANGED) {
             val packageName = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: return START_STICKY
             handlePackageChanged(packageName)

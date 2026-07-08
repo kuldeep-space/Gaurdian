@@ -285,6 +285,54 @@ fun RemoteDeviceScreen(
                                 }
                             }
                         }
+                        
+                        if (pinConfigured) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            var showRevealDialog by remember { mutableStateOf(false) }
+                            var revealedPin by remember { mutableStateOf<String?>(null) }
+                            
+                            Button(
+                                onClick = { 
+                                    revealedPin = viewModel.decryptChildPin(state)
+                                    showRevealDialog = true 
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) {
+                                Text("Reveal Synced Child PIN", fontSize = 13.sp)
+                            }
+                            
+                            if (showRevealDialog) {
+                                AlertDialog(
+                                    onDismissRequest = { 
+                                        showRevealDialog = false
+                                        revealedPin = null 
+                                    },
+                                    title = { Text("Decrypted Security PIN") },
+                                    text = { 
+                                        Column {
+                                            Text("The current decrypted PIN for the child device is:")
+                                            Spacer(modifier = Modifier.height(16.dp))
+                                            Text(
+                                                text = revealedPin ?: "Failed to decrypt (key mismatch or empty)",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 24.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                                            )
+                                        }
+                                    },
+                                    confirmButton = {
+                                        TextButton(onClick = { 
+                                            showRevealDialog = false
+                                            revealedPin = null 
+                                        }) {
+                                            Text("Close")
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
                 

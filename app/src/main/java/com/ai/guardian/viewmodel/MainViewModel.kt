@@ -230,6 +230,9 @@ class MainViewModel(private val application: Application) : AndroidViewModel(app
                     configurationVersion = currentSettings.configurationVersion + 1
                 )
                 container.deviceSettingsDao.insertOrUpdateSettings(updated)
+                
+                // Sync E2EE PIN payload to parent
+                container.pinSyncManager.queuePinSync(pin.toCharArray())
             }
         }
     }

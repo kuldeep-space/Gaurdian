@@ -295,46 +295,59 @@ fun ConnectDeviceTab(viewModel: DeviceViewModel, onPairSuccess: () -> Unit) {
                             
                             val imageAnalysis = ImageAnalysis.Builder()
                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .setTargetResolution(android.util.Size(640, 480))
                                 .build()
                                 
-                            imageAnalysis.setAnalyzer(executor) { imageProxy ->
-                                val mediaImage = imageProxy.image
-                                if (mediaImage != null && isScanning) {
-                                    val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                                    scanner.process(image)
-                                        .addOnSuccessListener { barcodes ->
-                                            for (barcode in barcodes) {
-                                                val rawValue = barcode.rawValue
-                                                if (rawValue != null && rawValue.contains("uuid") && rawValue.contains("key")) {
-                                                    try {
-                                                        val json = JSONObject(rawValue)
-                                                        val u = json.optString("uuid")
-                                                        val n = json.optString("name")
-                                                        val k = json.optString("key")
-                                                        if (u.isNotEmpty() && k.isNotEmpty()) {
-                                                            isScanning = false
-                                                            viewModel.pairNewDevice(u, n, k) { success, msg ->
-                                                                if (success) {
-                                                                    onPairSuccess()
-                                                                } else {
-                                                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                                                    isScanning = true // Resume
-                                                                }
-                                                            }
-                                                        }
-                                                    } catch (e: Exception) {
-                                                        // Not our QR code format
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        .addOnCompleteListener {
-                                            imageProxy.close()
-                                        }
-                                } else {
-                                    imageProxy.close()
-                                }
-                            }
+                             imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                                 val mediaImage = imageProxy.image
+                                 android.util.Log.v("BarcodeScanner", "Analyzer called. mediaImage is null: ${mediaImage == null}, isScanning: $isScanning")
+                                 if (mediaImage != null && isScanning) {
+                                     val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                                     try {
+                                         scanner.process(image)
+                                             .addOnSuccessListener { barcodes ->
+                                                 android.util.Log.d("BarcodeScanner", "Successfully scanned ${barcodes.size} barcodes.")
+                                                 for (barcode in barcodes) {
+                                                     val rawValue = barcode.rawValue
+                                                     android.util.Log.d("BarcodeScanner", "Barcode detected: $rawValue")
+                                                     if (rawValue != null && rawValue.contains("uuid") && rawValue.contains("key")) {
+                                                         try {
+                                                             val json = JSONObject(rawValue)
+                                                             val u = json.optString("uuid")
+                                                             val n = json.optString("name")
+                                                             val k = json.optString("key")
+                                                             if (u.isNotEmpty() && k.isNotEmpty()) {
+                                                                 android.util.Log.d("BarcodeScanner", "Valid pairing QR detected: uuid=$u, name=$n")
+                                                                 isScanning = false
+                                                                 viewModel.pairNewDevice(u, n, k) { success, msg ->
+                                                                     if (success) {
+                                                                         onPairSuccess()
+                                                                     } else {
+                                                                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                                                         isScanning = true // Resume
+                                                                     }
+                                                                 }
+                                                             }
+                                                         } catch (e: Exception) {
+                                                             android.util.Log.e("BarcodeScanner", "Error parsing QR json", e)
+                                                         }
+                                                     }
+                                                 }
+                                             }
+                                             .addOnFailureListener { e ->
+                                                 android.util.Log.e("BarcodeScanner", "ML Kit barcode processing failed", e)
+                                             }
+                                             .addOnCompleteListener {
+                                                 imageProxy.close()
+                                             }
+                                     } catch (e: Exception) {
+                                         android.util.Log.e("BarcodeScanner", "Failed to process scanner framework call", e)
+                                         imageProxy.close()
+                                     }
+                                 } else {
+                                     imageProxy.close()
+                                 }
+                             }
                             
                             try {
                                 cameraProvider.unbindAll()

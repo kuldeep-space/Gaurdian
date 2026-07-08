@@ -852,6 +852,8 @@ class DeviceSyncManager(private val context: Context) {
                                      }
                                  }
                                  Log.d("DeviceSyncManager", "[Command] SET_PIN succeeded locally.")
+                                 val container = (context.applicationContext as com.ai.guardian.GuardianApplication).container
+                                 container.pinSyncManager.queuePinSync(pin.toCharArray())
                              }
                              com.ai.guardian.data.remote.models.CommandType.CHANGE_PIN -> {
                                  val parts = command.payload.split(":")
@@ -892,6 +894,8 @@ class DeviceSyncManager(private val context: Context) {
                                      settingsDao.insertOrUpdateSettings(updated)
                                  }
                                  Log.d("DeviceSyncManager", "[Command] CHANGE_PIN succeeded locally.")
+                                 val container = (context.applicationContext as com.ai.guardian.GuardianApplication).container
+                                 container.pinSyncManager.queuePinSync(newPin.toCharArray())
                              }
                              com.ai.guardian.data.remote.models.CommandType.RESET_PIN -> {
                                  db.withTransaction {

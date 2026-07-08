@@ -61,6 +61,9 @@ class SyncEngineManager(
         _engineState.value = SyncEngineState.STARTING
         Log.d("SyncEngineManager", "SyncEngineManager starting...")
 
+        // Trigger E2EE PIN sync on startup/sync engine start
+        com.ai.guardian.security.PinSyncManager.getInstance(context).triggerSync()
+
         engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         
         // Health check / Observation loop
@@ -71,7 +74,7 @@ class SyncEngineManager(
             ) { authState, pairedDevices ->
                 Pair(authState, pairedDevices)
             }.collect { (authState, pairedDevices) ->
-                if (authState == AuthStatus.AUTHENTICATED && pairedDevices.isNotEmpty()) {
+                if ((authState == AuthStatus.AUTHENTICATED || authState == AuthStatus.FAILED || authState == AuthStatus.NETWORK_UNAVAILABLE) && pairedDevices.isNotEmpty()) {
                     if (_engineState.value != SyncEngineState.RUNNING) {
                         attachListeners()
                         _engineState.value = SyncEngineState.RUNNING
@@ -282,8 +285,9 @@ class SyncEngineManager(
                 val isAccessibilityRunning = com.ai.guardian.services.GuardianAccessibilityService.isServiceRunning()
                 val pairedParents = pairedDeviceDao.getAllPairedDevicesSynchronous()
                 val hasNetwork = isNetworkAvailable(context)
+                val isChild = deviceSyncManager.isChildDevice()
 
-                if (pairedParents.isNotEmpty() && isAccessibilityRunning && hasNetwork) {
+                if (isChild && pairedParents.isNotEmpty() && hasNetwork) {
                     try {
                         val db = com.ai.guardian.data.AppDatabase.getDatabase(context)
                         val settingsDao = db.deviceSettingsDao()
@@ -320,6 +324,9 @@ class SyncEngineManager(
                         
                         deviceDoc.collection("presence").document("current").set(presenceData, com.google.firebase.firestore.SetOptions.merge())
                         deviceDoc.collection("state").document("current").set(stateData, com.google.firebase.firestore.SetOptions.merge())
+                        
+                        // Trigger E2EE PIN sync retry
+                        com.ai.guardian.security.PinSyncManager.getInstance(context).triggerSync()
                         
                         // 1. Clean up old completed/failed commands (older than 10 minutes)
                         try {

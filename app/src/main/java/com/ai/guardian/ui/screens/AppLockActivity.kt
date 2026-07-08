@@ -191,7 +191,11 @@ class AppLockActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         com.ai.guardian.services.AppLockLaunchManager.cancelLaunchTimeout()
         super.onCreate(savedInstanceState)
-        if (!sessionInitialized.compareAndSet(false, true)) {
+        val beforeCAS = sessionInitialized.get()
+        val res = sessionInitialized.compareAndSet(false, true)
+        android.util.Log.d("GuardianAI_Debug", "[LOCK_TRACE] onCreate sessionInitialized: before=$beforeCAS, result=$res")
+        if (!res) {
+            android.util.Log.w("GuardianAI_Debug", "[LOCK_TRACE] onCreate finished, reason: session already initialized")
             android.util.Log.w("GuardianAI_Debug", "[Lock] Activity session already initialized. Skipping recreate.")
             finish()
             return

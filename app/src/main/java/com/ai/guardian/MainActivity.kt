@@ -16,6 +16,15 @@ import androidx.lifecycle.ViewModelProvider
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Ensure foreground service is running
+        val serviceIntent = android.content.Intent(this, com.ai.guardian.services.GuardianForegroundService::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+        
         setContent {
             val viewModel: MainViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
                 factory = ViewModelProvider.AndroidViewModelFactory.getInstance(application)

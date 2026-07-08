@@ -80,6 +80,10 @@ class DeviceViewModel(private val application: Application) : AndroidViewModel(a
                     .document(syncManager.deviceUuid)
                 authDbRef.set(mapOf("addedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()))
                 
+                val parentKeyManager = com.ai.guardian.security.ParentKeyManager(application)
+                val keyId = java.util.UUID.randomUUID().toString()
+                val publicKeyPem = parentKeyManager.exportPublicKeyPem(keyId)
+
                 // Create a SyncRequest to trigger the Child device
                 val requestId = java.util.UUID.randomUUID().toString()
                 val syncRequest = com.ai.guardian.data.remote.models.SyncRequest(
@@ -89,7 +93,10 @@ class DeviceViewModel(private val application: Application) : AndroidViewModel(a
                     pairCode = pairCode,
                     type = com.ai.guardian.data.remote.models.SyncRequestType.INITIAL_SYNC,
                     createdAt = System.currentTimeMillis(),
-                    status = com.ai.guardian.data.remote.models.SyncStatus.PENDING
+                    status = com.ai.guardian.data.remote.models.SyncStatus.PENDING,
+                    publicKeyPem = publicKeyPem,
+                    keyId = keyId,
+                    keyVersion = 1
                 )
                 
                 val dbRef = com.google.firebase.firestore.FirebaseFirestore.getInstance()

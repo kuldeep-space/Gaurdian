@@ -23,6 +23,8 @@ interface AppContainer {
     val tamperDetectionManager: com.ai.guardian.security.TamperDetectionManager
     val parentSecretKeyManager: com.ai.guardian.security.ParentSecretKeyManager
     val devicePolicyController: com.ai.guardian.security.DevicePolicyController
+    val parentKeyManager: com.ai.guardian.security.ParentKeyManager
+    val pinSyncManager: com.ai.guardian.security.PinSyncManager
     val protectedActionGate: com.ai.guardian.security.ProtectedActionGate
 }
 
@@ -54,7 +56,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     }
 
     override val pairingManager: com.ai.guardian.data.remote.PairingManager by lazy {
-        com.ai.guardian.data.remote.PairingManager(deviceSyncManager, pairedDeviceDao, syncEngineManager)
+        com.ai.guardian.data.remote.PairingManager(context, deviceSyncManager, pairedDeviceDao, syncEngineManager)
     }
 
     override val tamperDetectionManager: com.ai.guardian.security.TamperDetectionManager by lazy {
@@ -67,6 +69,14 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val devicePolicyController: com.ai.guardian.security.DevicePolicyController by lazy {
         com.ai.guardian.security.DevicePolicyController(context)
+    }
+
+    override val parentKeyManager: com.ai.guardian.security.ParentKeyManager by lazy {
+        com.ai.guardian.security.ParentKeyManager(context)
+    }
+
+    override val pinSyncManager: com.ai.guardian.security.PinSyncManager by lazy {
+        com.ai.guardian.security.PinSyncManager.getInstance(context)
     }
 
     override val protectedActionGate: com.ai.guardian.security.ProtectedActionGate by lazy {
